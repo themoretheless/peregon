@@ -68,6 +68,18 @@ interface CacheEntry<T> {
   engineVersion: string;
 }
 
+interface BlockDefinition {
+  key: string;
+  kind: NodeKind;
+  format?: SourceFormat;
+  outputFormat?: OutputFormat;
+  label: string;
+  eyebrow: string;
+  icon: string;
+  color: string;
+  keywords: string;
+}
+
 const SAMPLE_JSON = `{
   "stores": [
     {
@@ -103,15 +115,15 @@ const NODE_META: Record<NodeKind, { label: string; eyebrow: string; icon: string
   output: { label: "Результат", eyebrow: "Выход", icon: "→", color: "#d06a35" },
 };
 
-const LIBRARY_BLOCKS: Array<{ key: string; kind: NodeKind; format?: SourceFormat; outputFormat?: OutputFormat; label: string; eyebrow: string; icon: string; color: string }> = [
-  { key: "json", kind: "source", format: "json", label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9" },
-  { key: "csv", kind: "source", format: "csv", label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf" },
-  { key: "fields", kind: "fields", label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb" },
-  { key: "condition", kind: "condition", label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288" },
-  { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35" },
-  { key: "json-output", kind: "output", outputFormat: "json", label: "JSON", eyebrow: "Выход", icon: "{ }", color: "#d06a35" },
-  { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV", eyebrow: "Выход", icon: "CSV", color: "#d06a35" },
-  { key: "sql-output", kind: "output", outputFormat: "sql", label: "SQL INSERT", eyebrow: "Выход", icon: "SQL", color: "#d06a35" },
+const LIBRARY_BLOCKS: BlockDefinition[] = [
+  { key: "json", kind: "source", format: "json", label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9", keywords: "json данные источник" },
+  { key: "csv", kind: "source", format: "csv", label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf", keywords: "csv таблица данные источник" },
+  { key: "fields", kind: "fields", label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb", keywords: "поля выбрать оставить проекция" },
+  { key: "condition", kind: "condition", label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288", keywords: "условие фильтр отбор where" },
+  { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35", keywords: "текст строка список через запятую" },
+  { key: "json-output", kind: "output", outputFormat: "json", label: "JSON", eyebrow: "Выход", icon: "{ }", color: "#d06a35", keywords: "json результат экспорт выход" },
+  { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV", eyebrow: "Выход", icon: "CSV", color: "#d06a35", keywords: "csv таблица результат экспорт выход" },
+  { key: "sql-output", kind: "output", outputFormat: "sql", label: "SQL INSERT", eyebrow: "Выход", icon: "SQL", color: "#d06a35", keywords: "sql insert база запрос результат экспорт" },
 ];
 
 const FILTER_OPERATORS: Array<{ value: FilterOperator; label: string }> = [
@@ -184,6 +196,9 @@ const isRunning = ref(false);
 const lastRunMs = ref(0);
 const cachedBranches = ref(0);
 const notice = ref("Перетащите блок или соедините порты");
+const continuationFor = ref("");
+const continuationQuery = ref("");
+const continuationSearchInput = ref<HTMLInputElement | null>(null);
 
 let client: JsonEngineClient | null = null;
 let renderer: FlowSurfaceRenderer | null = null;
@@ -301,6 +316,45 @@ function requiresValue(operator: FilterOperator) {
   return operator !== "exists" && operator !== "not_exists";
 }
 
+function compatibleBlocks(node: FlowNode) {
+  const allowedKeys = node.kind === "source"
+    ? ["fields"]
+    : node.kind === "fields" || node.kind === "condition"
+      ? ["condition", "flat", "json-output", "csv-output", "sql-output"]
+      : [];
+  return LIBRARY_BLOCKS.filter((block) => allowedKeys.includes(block.key));
+}
+
+function continuationBlocks(node: FlowNode) {
+  const query = continuationQuery.value.trim().toLocaleLowerCase("ru");
+  const blocks = compatibleBlocks(node);
+  if (!query) return blocks;
+  const stopWords = new Set(["хочу", "нужно", "надо", "добавить", "добавь", "блок", "сделать", "получить", "вывести", "создать", "после", "для", "через"]);
+  const tokens = query.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 1 && !stopWords.has(token));
+  if (!tokens.length) return blocks;
+  return blocks.filter((block) => {
+    const searchable = `${block.label} ${block.eyebrow} ${block.keywords}`.toLocaleLowerCase("ru");
+    return tokens.every((token) => searchable.includes(token) || searchable.includes(token.slice(0, 5)));
+  });
+}
+
+async function toggleContinuation(nodeId: string) {
+  if (continuationFor.value === nodeId) {
+    continuationFor.value = "";
+    continuationQuery.value = "";
+    return;
+  }
+  continuationFor.value = nodeId;
+  continuationQuery.value = "";
+  await nextTick();
+  continuationSearchInput.value?.focus();
+}
+
+function closeContinuation() {
+  continuationFor.value = "";
+  continuationQuery.value = "";
+}
+
 function setNotice(message: string) {
   notice.value = message;
   window.clearTimeout(noticeTimer);
@@ -309,7 +363,12 @@ function setNotice(message: string) {
   }, 2600);
 }
 
-function addNode(kind: NodeKind, sourceFormat: SourceFormat = "json", outputFormat: OutputFormat = "flat") {
+function addNode(
+  kind: NodeKind,
+  sourceFormat: SourceFormat = "json",
+  outputFormat: OutputFormat = "flat",
+  originNode?: FlowNode,
+) {
   const bounds = board.value?.getBoundingClientRect();
   const centerX = bounds ? (bounds.width / 2 - panX.value) / zoom.value : 600;
   const centerY = bounds ? (bounds.height / 2 - panY.value) / zoom.value : 300;
@@ -318,8 +377,12 @@ function addNode(kind: NodeKind, sourceFormat: SourceFormat = "json", outputForm
     id,
     kind,
     title: `${kind === "source" ? sourceFormat.toUpperCase() : kind === "output" ? LIBRARY_BLOCKS.find((block) => block.outputFormat === outputFormat)?.label : NODE_META[kind].label} ${nextNodeId - 1}`,
-    x: centerX - 170 + (nextNodeId % 3) * 24,
-    y: centerY - 120 + (nextNodeId % 2) * 28,
+    x: originNode
+      ? originNode.x + (originNode.kind === "condition" ? 380 : originNode.kind === "source" ? 360 : 340) + 92
+      : centerX - 170 + (nextNodeId % 3) * 24,
+    y: originNode
+      ? originNode.y + outgoingEdges(originNode.id).length * 76
+      : centerY - 120 + (nextNodeId % 2) * 28,
   };
   if (kind === "source") {
     base.sourceFormat = sourceFormat;
@@ -343,9 +406,21 @@ function addNode(kind: NodeKind, sourceFormat: SourceFormat = "json", outputForm
     base.stats = null;
   }
   nodes.value.push(base);
+  if (originNode) connectNodes(originNode.id, id);
   selectedNodeId.value = id;
   setNotice(`Блок «${kind === "source" ? sourceFormat.toUpperCase() : kind === "output" ? outputFormat.toUpperCase() : NODE_META[kind].label}» добавлен`);
   scheduleRender();
+  return id;
+}
+
+function addContinuation(originNode: FlowNode, block: BlockDefinition) {
+  addNode(block.kind, block.format, block.outputFormat, originNode);
+  closeContinuation();
+}
+
+function addFirstContinuation(originNode: FlowNode) {
+  const first = continuationBlocks(originNode)[0];
+  if (first) addContinuation(originNode, first);
 }
 
 function removeNode(id: string) {
@@ -356,6 +431,7 @@ function removeNode(id: string) {
   outputCache.delete(id);
   if (selectedNodeId.value === id) selectedNodeId.value = "";
   if (connectingFrom.value === id) connectingFrom.value = "";
+  if (continuationFor.value === id) closeContinuation();
   scheduleRender();
 }
 
@@ -479,6 +555,7 @@ function removeCondition(node: FlowNode, conditionId: number) {
 
 function startNodeDrag(event: PointerEvent, node: FlowNode) {
   if (event.button !== 0) return;
+  closeContinuation();
   selectedNodeId.value = node.id;
   gesture = {
     type: "node",
@@ -494,6 +571,7 @@ function startNodeDrag(event: PointerEvent, node: FlowNode) {
 function startPan(event: PointerEvent) {
   if (event.button !== 0 && event.button !== 1) return;
   selectedNodeId.value = "";
+  closeContinuation();
   connectingFrom.value = "";
   gesture = {
     type: "pan",
@@ -796,6 +874,11 @@ async function executeGraph() {
 function handleKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
   const editing = target?.matches("input, textarea, select, [contenteditable='true']");
+  if (event.key === "Escape" && continuationFor.value) {
+    event.preventDefault();
+    closeContinuation();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault();
     executeGraph();
@@ -935,7 +1018,7 @@ onBeforeUnmount(() => {
           v-for="node in nodes"
           :key="node.id"
           class="flow-node"
-          :class="[`node-${node.kind}`, { selected: selectedNodeId === node.id }]"
+          :class="[`node-${node.kind}`, { selected: selectedNodeId === node.id, 'continuation-open': continuationFor === node.id }]"
           :style="{
             transform: `translate(${node.x}px, ${node.y}px)`,
             '--node-color': nodeDisplayMeta(node).color,
@@ -1130,6 +1213,57 @@ onBeforeUnmount(() => {
               @click="removeEdge(edge.id)"
             >→ {{ nodeById(edge.to)?.title ?? "блок" }} <span>×</span></button>
           </footer>
+
+          <button
+            v-if="node.kind !== 'output'"
+            type="button"
+            class="node-add-next"
+            :class="{ active: continuationFor === node.id }"
+            :aria-expanded="continuationFor === node.id"
+            :aria-label="`Добавить следующий блок после ${node.title}`"
+            @pointerdown.stop
+            @click.stop="toggleContinuation(node.id)"
+          >+</button>
+
+          <div
+            v-if="continuationFor === node.id"
+            class="continuation-popover"
+            @pointerdown.stop
+            @click.stop
+          >
+            <div class="continuation-heading">
+              <span>Продолжить цепочку</span>
+              <button type="button" aria-label="Закрыть" @click="closeContinuation">×</button>
+            </div>
+            <label class="continuation-search">
+              <span>⌕</span>
+              <input
+                ref="continuationSearchInput"
+                v-model="continuationQuery"
+                type="search"
+                placeholder="Например, SQL или фильтр"
+                aria-label="Найти совместимый блок"
+                @keydown.enter.prevent="addFirstContinuation(node)"
+              />
+            </label>
+            <div v-if="continuationBlocks(node).length" class="continuation-results">
+              <button
+                v-for="block in continuationBlocks(node)"
+                :key="block.key"
+                type="button"
+                :style="{ '--node-color': block.color }"
+                @click="addContinuation(node, block)"
+              >
+                <span>{{ block.icon }}</span>
+                <div>
+                  <strong>{{ block.label }}</strong>
+                  <small>{{ block.eyebrow }}</small>
+                </div>
+                <b>↗</b>
+              </button>
+            </div>
+            <div v-else class="continuation-empty">Совместимых блоков не найдено</div>
+          </div>
 
           <button
             v-if="node.kind !== 'output'"
