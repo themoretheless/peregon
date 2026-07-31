@@ -12,6 +12,32 @@ enum FilterMode {
     Any,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum SourceFormat {
+    #[default]
+    Json,
+    Csv,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum OutputFormat {
+    #[default]
+    Flat,
+    Json,
+    Csv,
+    Sql,
+}
+
+fn default_csv_delimiter() -> String {
+    ",".to_owned()
+}
+
+fn default_table_name() -> String {
+    "result".to_owned()
+}
+
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 enum FilterOperator {
@@ -41,6 +67,10 @@ struct FilterCondition {
 enum EngineRequest {
     Analyze {
         json: String,
+        #[serde(default)]
+        source_format: SourceFormat,
+        #[serde(default = "default_csv_delimiter")]
+        csv_delimiter: String,
     },
     FilterPreview {
         json: String,
@@ -49,6 +79,10 @@ enum EngineRequest {
         filters: Vec<FilterCondition>,
         #[serde(default)]
         filter_mode: FilterMode,
+        #[serde(default)]
+        source_format: SourceFormat,
+        #[serde(default = "default_csv_delimiter")]
+        csv_delimiter: String,
     },
     Transform {
         json: String,
@@ -61,6 +95,16 @@ enum EngineRequest {
         filters: Vec<FilterCondition>,
         #[serde(default)]
         filter_mode: FilterMode,
+        #[serde(default)]
+        source_format: SourceFormat,
+        #[serde(default = "default_csv_delimiter")]
+        csv_delimiter: String,
+        #[serde(default)]
+        output_format: OutputFormat,
+        #[serde(default = "default_csv_delimiter")]
+        output_csv_delimiter: String,
+        #[serde(default = "default_table_name")]
+        table_name: String,
     },
 }
 
@@ -94,13 +138,26 @@ pub fn process_json(request_json: &str) -> String {
 
 fn handle_request(request: EngineRequest) -> Value {
     match request {
-        EngineRequest::Analyze { json } => analyze(&json),
+        EngineRequest::Analyze {
+            json,
+            source_format,
+            csv_delimiter,
+        } => analyze(&json, source_format, &csv_delimiter),
         EngineRequest::FilterPreview {
             json,
             path,
             filters,
             filter_mode,
-        } => filter_preview(&json, &path, &filters, filter_mode),
+            source_format,
+            csv_delimiter,
+        } => filter_preview(
+            &json,
+            &path,
+            &filters,
+            filter_mode,
+            source_format,
+            &csv_delimiter,
+        ),
         EngineRequest::Transform {
             json,
             path,
@@ -110,6 +167,11 @@ fn handle_request(request: EngineRequest) -> Value {
             unique,
             filters,
             filter_mode,
+            source_format,
+            csv_delimiter,
+            output_format,
+            output_csv_delimiter,
+            table_name,
         } => transform(
             &json,
             &path,
@@ -119,6 +181,11 @@ fn handle_request(request: EngineRequest) -> Value {
             unique,
             &filters,
             filter_mode,
+            source_format,
+            &csv_delimiter,
+            output_format,
+            &output_csv_delimiter,
+            &table_name,
         ),
     }
 }
@@ -128,12 +195,14 @@ fn filter_preview(
     path: &str,
     filters: &[FilterCondition],
     filter_mode: FilterMode,
+    source_format: SourceFormat,
+    csv_delimiter: &str,
 ) -> Value {
-    let value = match parse_json(input) {
+    let value = match parse_input(input, source_format, csv_delimiter) {
         Ok(value) => value,
         Err(problem) => {
             return error_response(
-                &format!("Некорректный JSON: {}", problem.message),
+                &format!("Некорректные исходные данные: {}", problem.message),
                 problem.line,
                 problem.column,
             )
@@ -192,12 +261,137 @@ fn parse_json(input: &str) -> Result<Value, ParseProblem> {
     })
 }
 
-fn analyze(input: &str) -> Value {
-    let value = match parse_json(input) {
+fn parse_input(
+    input: &str,
+    source_format: SourceFormat,
+    csv_delimiter: &str,
+) -> Result<Value, ParseProblem> {
+    match source_format {
+        SourceFormat::Json => parse_json(input),
+        SourceFormat::Csv => parse_csv(input, csv_delimiter),
+    }
+}
+
+fn parse_csv(input: &str, delimiter: &str) -> Result<Value, ParseProblem> {
+    let Some(separator) = delimiter.chars().next() else {
+        return Err(ParseProblem {
+            message: "Укажите разделитель CSV".to_owned(),
+            line: 1,
+            column: 1,
+        });
+    };
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quoted = false;
+    let mut line = 1usize;
+    let mut column = 0usize;
+
+    while let Some(character) = chars.next() {
+        column += 1;
+        if quoted {
+            if character == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    column += 1;
+                    field.push('"');
+                } else {
+                    quoted = false;
+                }
+            } else {
+                if character == '\n' {
+                    line += 1;
+                    column = 0;
+                }
+                field.push(character);
+            }
+            continue;
+        }
+
+        match character {
+            '"' if field.is_empty() => quoted = true,
+            value if value == separator => {
+                row.push(std::mem::take(&mut field));
+            }
+            '\n' => {
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+                line += 1;
+                column = 0;
+            }
+            '\r' if chars.peek() == Some(&'\n') => {}
+            value => field.push(value),
+        }
+    }
+
+    if quoted {
+        return Err(ParseProblem {
+            message: "Незакрытая кавычка в CSV".to_owned(),
+            line,
+            column,
+        });
+    }
+    row.push(field);
+    if row.iter().any(|value| !value.is_empty()) || rows.is_empty() {
+        rows.push(row);
+    }
+
+    let headers = rows.first().cloned().unwrap_or_default();
+    if headers.is_empty() || headers.iter().all(|header| header.trim().is_empty()) {
+        return Err(ParseProblem {
+            message: "В CSV отсутствует строка заголовков".to_owned(),
+            line: 1,
+            column: 1,
+        });
+    }
+    let headers: Vec<String> = headers
+        .into_iter()
+        .map(|header| header.trim().to_owned())
+        .collect();
+    let mut items = Vec::new();
+    for values in rows.into_iter().skip(1) {
+        if values.iter().all(|value| value.trim().is_empty()) {
+            continue;
+        }
+        let mut object = Map::new();
+        for (index, header) in headers.iter().enumerate() {
+            if header.is_empty() {
+                continue;
+            }
+            object.insert(
+                header.clone(),
+                csv_scalar(values.get(index).map(String::as_str).unwrap_or("")),
+            );
+        }
+        items.push(Value::Object(object));
+    }
+    Ok(Value::Array(items))
+}
+
+fn csv_scalar(raw: &str) -> Value {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("null") {
+        return Value::Null;
+    }
+    if value.eq_ignore_ascii_case("true") {
+        return Value::Bool(true);
+    }
+    if value.eq_ignore_ascii_case("false") {
+        return Value::Bool(false);
+    }
+    if let Ok(Value::Number(number)) = serde_json::from_str::<Value>(value) {
+        return Value::Number(number);
+    }
+    Value::String(raw.to_owned())
+}
+
+fn analyze(input: &str, source_format: SourceFormat, csv_delimiter: &str) -> Value {
+    let value = match parse_input(input, source_format, csv_delimiter) {
         Ok(value) => value,
         Err(problem) => {
             return error_response(
-                &format!("Некорректный JSON: {}", problem.message),
+                &format!("Некорректные исходные данные: {}", problem.message),
                 problem.line,
                 problem.column,
             )
@@ -291,12 +485,17 @@ fn transform(
     unique: bool,
     filters: &[FilterCondition],
     filter_mode: FilterMode,
+    source_format: SourceFormat,
+    csv_delimiter: &str,
+    output_format: OutputFormat,
+    output_csv_delimiter: &str,
+    table_name: &str,
 ) -> Value {
-    let value = match parse_json(input) {
+    let value = match parse_input(input, source_format, csv_delimiter) {
         Ok(value) => value,
         Err(problem) => {
             return error_response(
-                &format!("Некорректный JSON: {}", problem.message),
+                &format!("Некорректные исходные данные: {}", problem.message),
                 problem.line,
                 problem.column,
             )
@@ -318,10 +517,8 @@ fn transform(
         return error_response("По выбранному пути находится не массив", 0, 0);
     };
 
-    let mut values = Vec::new();
-    let mut seen = HashSet::new();
+    let mut matched_objects: Vec<&Map<String, Value>> = Vec::new();
     let mut object_items = 0usize;
-    let mut matched_items = 0usize;
     let mut filtered_out = 0usize;
     let mut skipped_items = 0usize;
     let mut empty_values = 0usize;
@@ -337,12 +534,56 @@ fn transform(
             filtered_out += 1;
             continue;
         }
-        matched_items += 1;
+        matched_objects.push(object);
+    }
 
+    let (output, values_count) = match output_format {
+        OutputFormat::Flat => format_flat(
+            &matched_objects,
+            fields,
+            delimiter,
+            skip_empty,
+            unique,
+            &mut empty_values,
+        ),
+        OutputFormat::Json => format_json(&matched_objects, fields, &mut empty_values),
+        OutputFormat::Csv => format_csv(
+            &matched_objects,
+            fields,
+            output_csv_delimiter,
+            &mut empty_values,
+        ),
+        OutputFormat::Sql => format_sql(&matched_objects, fields, table_name, &mut empty_values),
+    };
+
+    json!({
+        "ok": true,
+        "output": output,
+        "source_items": items.len(),
+        "object_items": object_items,
+        "matched_items": matched_objects.len(),
+        "filtered_out": filtered_out,
+        "skipped_items": skipped_items,
+        "empty_values": empty_values,
+        "values": values_count,
+    })
+}
+
+fn format_flat(
+    objects: &[&Map<String, Value>],
+    fields: &[String],
+    delimiter: &str,
+    skip_empty: bool,
+    unique: bool,
+    empty_values: &mut usize,
+) -> (String, usize) {
+    let mut values = Vec::new();
+    let mut seen = HashSet::new();
+    for object in objects {
         for field in fields {
             match object.get(field) {
                 Some(Value::Null) | None => {
-                    empty_values += 1;
+                    *empty_values += 1;
                     if !skip_empty {
                         push_value(String::new(), delimiter, unique, &mut seen, &mut values);
                     }
@@ -350,7 +591,7 @@ fn transform(
                 Some(value) => {
                     let raw = value_to_text(value);
                     if raw.is_empty() && skip_empty {
-                        empty_values += 1;
+                        *empty_values += 1;
                     } else {
                         push_value(raw, delimiter, unique, &mut seen, &mut values);
                     }
@@ -358,18 +599,128 @@ fn transform(
             }
         }
     }
+    let count = values.len();
+    (values.join(delimiter), count)
+}
 
-    json!({
-        "ok": true,
-        "output": values.join(delimiter),
-        "source_items": items.len(),
-        "object_items": object_items,
-        "matched_items": matched_items,
-        "filtered_out": filtered_out,
-        "skipped_items": skipped_items,
-        "empty_values": empty_values,
-        "values": values.len(),
-    })
+fn projected_object(
+    object: &Map<String, Value>,
+    fields: &[String],
+    empty_values: &mut usize,
+) -> Value {
+    let mut projected = Map::new();
+    for field in fields {
+        let value = object.get(field).cloned().unwrap_or(Value::Null);
+        if value.is_null() {
+            *empty_values += 1;
+        }
+        projected.insert(field.clone(), value);
+    }
+    Value::Object(projected)
+}
+
+fn format_json(
+    objects: &[&Map<String, Value>],
+    fields: &[String],
+    empty_values: &mut usize,
+) -> (String, usize) {
+    let rows: Vec<Value> = objects
+        .iter()
+        .map(|object| projected_object(object, fields, empty_values))
+        .collect();
+    let count = rows.len() * fields.len();
+    (
+        serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_owned()),
+        count,
+    )
+}
+
+fn format_csv(
+    objects: &[&Map<String, Value>],
+    fields: &[String],
+    delimiter: &str,
+    empty_values: &mut usize,
+) -> (String, usize) {
+    let separator = delimiter.chars().next().unwrap_or(',').to_string();
+    let mut rows = vec![fields
+        .iter()
+        .map(|field| escape_value(field, &separator))
+        .collect::<Vec<_>>()
+        .join(&separator)];
+    for object in objects {
+        let row = fields
+            .iter()
+            .map(|field| {
+                let value = object.get(field).unwrap_or(&Value::Null);
+                if value.is_null() {
+                    *empty_values += 1;
+                }
+                escape_value(&value_to_text(value), &separator)
+            })
+            .collect::<Vec<_>>()
+            .join(&separator);
+        rows.push(row);
+    }
+    (rows.join("\n"), objects.len() * fields.len())
+}
+
+fn format_sql(
+    objects: &[&Map<String, Value>],
+    fields: &[String],
+    table_name: &str,
+    empty_values: &mut usize,
+) -> (String, usize) {
+    let table = quote_identifier(if table_name.trim().is_empty() {
+        "result"
+    } else {
+        table_name.trim()
+    });
+    let columns = fields
+        .iter()
+        .map(|field| quote_identifier(field))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rows = objects
+        .iter()
+        .map(|object| {
+            let values = fields
+                .iter()
+                .map(|field| {
+                    let value = object.get(field).unwrap_or(&Value::Null);
+                    if value.is_null() {
+                        *empty_values += 1;
+                    }
+                    sql_value(value)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("INSERT INTO {table} ({columns}) VALUES ({values});")
+        })
+        .collect::<Vec<_>>();
+    (rows.join("\n"), objects.len() * fields.len())
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn sql_value(value: &Value) -> String {
+    match value {
+        Value::Null => "NULL".to_owned(),
+        Value::Bool(boolean) => {
+            if *boolean {
+                "TRUE".to_owned()
+            } else {
+                "FALSE".to_owned()
+            }
+        }
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => format!("'{}'", text.replace('\'', "''")),
+        Value::Array(_) | Value::Object(_) => {
+            let text = serde_json::to_string(value).unwrap_or_default();
+            format!("'{}'", text.replace('\'', "''"))
+        }
+    }
 }
 
 fn matches_filters(
@@ -880,5 +1231,68 @@ mod tests {
         assert_eq!(result["output"], "");
         assert_eq!(result["matched_items"], 0);
         assert_eq!(result["filtered_out"], 2);
+    }
+
+    #[test]
+    fn analyzes_and_filters_csv_input() {
+        let csv = "id,name,state\nA1,Москва,1\nB2,Белгород,0";
+        let analysis = request(json!({
+            "action": "analyze",
+            "json": csv,
+            "source_format": "csv",
+            "csv_delimiter": ","
+        }));
+        assert_eq!(analysis["ok"], true);
+        assert_eq!(analysis["array_paths"][0]["path"], "");
+        assert_eq!(analysis["array_paths"][0]["fields"][2]["kind"], "number");
+
+        let result = request(json!({
+            "action": "transform",
+            "json": csv,
+            "source_format": "csv",
+            "csv_delimiter": ",",
+            "path": "",
+            "fields": ["name"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"state","operator":"equal","value":"1"}],
+            "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "Москва");
+        assert_eq!(result["matched_items"], 1);
+    }
+
+    #[test]
+    fn exports_projected_rows_as_json_and_csv() {
+        let input = r#"[{"name":"Москва","state":1},{"name":"Белгород","state":0}]"#;
+        let json_result = request(json!({
+            "action": "transform", "json": input, "path": "", "fields": ["name", "state"],
+            "delimiter": ", ", "skip_empty": true, "unique": false,
+            "output_format": "json", "filters": [], "filter_mode": "all"
+        }));
+        let output: Value = serde_json::from_str(json_result["output"].as_str().unwrap()).unwrap();
+        assert_eq!(output[0]["name"], "Москва");
+
+        let csv_result = request(json!({
+            "action": "transform", "json": input, "path": "", "fields": ["name", "state"],
+            "delimiter": ", ", "skip_empty": true, "unique": false,
+            "output_format": "csv", "output_csv_delimiter": ";", "filters": [], "filter_mode": "all"
+        }));
+        assert_eq!(csv_result["output"], "name;state\nМосква;1\nБелгород;0");
+    }
+
+    #[test]
+    fn exports_safe_sql_insert_statements() {
+        let input = r#"[{"name":"O'Reilly","state":1},{"name":"Пусто","state":null}]"#;
+        let result = request(json!({
+            "action": "transform", "json": input, "path": "", "fields": ["name", "state"],
+            "delimiter": ", ", "skip_empty": true, "unique": false,
+            "output_format": "sql", "table_name": "stores", "filters": [], "filter_mode": "all"
+        }));
+        assert_eq!(
+            result["output"],
+            "INSERT INTO \"stores\" (\"name\", \"state\") VALUES ('O''Reilly', 1);\nINSERT INTO \"stores\" (\"name\", \"state\") VALUES ('Пусто', NULL);"
+        );
     }
 }

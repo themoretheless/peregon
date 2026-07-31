@@ -15,6 +15,8 @@ import type {
   FilterCondition,
   FilterMode,
   FilterOperator,
+  OutputFormat,
+  SourceFormat,
   TransformResponse,
   TransformSuccess,
 } from "./engine/types";
@@ -34,11 +36,15 @@ interface FlowNode {
   x: number;
   y: number;
   json?: string;
+  sourceFormat?: SourceFormat;
+  csvDelimiter?: string;
   selectedPath?: string;
   selectedFields?: string[];
   conditions?: UiCondition[];
   filterMode?: FilterMode;
   delimiter?: string;
+  outputFormat?: OutputFormat;
+  tableName?: string;
   output?: string;
   stats?: TransformSuccess | null;
   error?: string;
@@ -73,12 +79,28 @@ const SAMPLE_JSON = `{
   ]
 }`;
 
+const SAMPLE_CSV = `id,name,locality,state
+A-101,Москва 4-10,Москва,1
+B-204,Белгород-2,Белгород,1
+K-307,Курск-1,Курск,0`;
+
 const NODE_META: Record<NodeKind, { label: string; eyebrow: string; icon: string; color: string }> = {
-  source: { label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9" },
+  source: { label: "Данные", eyebrow: "Источник", icon: "{ }", color: "#6557d9" },
   fields: { label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb" },
   condition: { label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288" },
   output: { label: "Результат", eyebrow: "Выход", icon: "→", color: "#d06a35" },
 };
+
+const LIBRARY_BLOCKS: Array<{ key: string; kind: NodeKind; format?: SourceFormat; outputFormat?: OutputFormat; label: string; eyebrow: string; icon: string; color: string }> = [
+  { key: "json", kind: "source", format: "json", label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9" },
+  { key: "csv", kind: "source", format: "csv", label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf" },
+  { key: "fields", kind: "fields", label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb" },
+  { key: "condition", kind: "condition", label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288" },
+  { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35" },
+  { key: "json-output", kind: "output", outputFormat: "json", label: "JSON", eyebrow: "Выход", icon: "{ }", color: "#d06a35" },
+  { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV", eyebrow: "Выход", icon: "CSV", color: "#d06a35" },
+  { key: "sql-output", kind: "output", outputFormat: "sql", label: "SQL INSERT", eyebrow: "Выход", icon: "SQL", color: "#d06a35" },
+];
 
 const FILTER_OPERATORS: Array<{ value: FilterOperator; label: string }> = [
   { value: "equal", label: "равно" },
@@ -95,7 +117,7 @@ const FILTER_OPERATORS: Array<{ value: FilterOperator; label: string }> = [
 ];
 
 const nodes = ref<FlowNode[]>([
-  { id: "source-1", kind: "source", title: "Данные магазинов", x: 80, y: 190, json: SAMPLE_JSON },
+  { id: "source-1", kind: "source", title: "Данные магазинов", x: 80, y: 190, json: SAMPLE_JSON, sourceFormat: "json", csvDelimiter: "," },
   {
     id: "fields-1",
     kind: "fields",
@@ -121,6 +143,8 @@ const nodes = ref<FlowNode[]>([
     x: 1280,
     y: 180,
     delimiter: ", ",
+    outputFormat: "flat",
+    tableName: "stores",
     output: "",
     stats: null,
   },
@@ -171,11 +195,15 @@ const executionSignature = computed(() =>
       id: node.id,
       kind: node.kind,
       json: node.json,
+      sourceFormat: node.sourceFormat,
+      csvDelimiter: node.csvDelimiter,
       selectedPath: node.selectedPath,
       selectedFields: node.selectedFields,
       conditions: node.conditions,
       filterMode: node.filterMode,
       delimiter: node.delimiter,
+      outputFormat: node.outputFormat,
+      tableName: node.tableName,
     })),
   }),
 );
@@ -191,6 +219,13 @@ const geometrySignature = computed(() =>
 
 function nodeMeta(kind: NodeKind) {
   return NODE_META[kind];
+}
+
+function nodeDisplayMeta(node: FlowNode) {
+  if (node.kind !== "source") return nodeMeta(node.kind);
+  return node.sourceFormat === "csv"
+    ? { label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf" }
+    : { label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9" };
 }
 
 function nodeById(id: string) {
@@ -256,7 +291,7 @@ function setNotice(message: string) {
   }, 2600);
 }
 
-function addNode(kind: NodeKind) {
+function addNode(kind: NodeKind, sourceFormat: SourceFormat = "json", outputFormat: OutputFormat = "flat") {
   const bounds = board.value?.getBoundingClientRect();
   const centerX = bounds ? (bounds.width / 2 - panX.value) / zoom.value : 600;
   const centerY = bounds ? (bounds.height / 2 - panY.value) / zoom.value : 300;
@@ -264,11 +299,15 @@ function addNode(kind: NodeKind) {
   const base: FlowNode = {
     id,
     kind,
-    title: `${NODE_META[kind].label} ${nextNodeId - 1}`,
+    title: `${kind === "source" ? sourceFormat.toUpperCase() : kind === "output" ? LIBRARY_BLOCKS.find((block) => block.outputFormat === outputFormat)?.label : NODE_META[kind].label} ${nextNodeId - 1}`,
     x: centerX - 170 + (nextNodeId % 3) * 24,
     y: centerY - 120 + (nextNodeId % 2) * 28,
   };
-  if (kind === "source") base.json = SAMPLE_JSON;
+  if (kind === "source") {
+    base.sourceFormat = sourceFormat;
+    base.csvDelimiter = ",";
+    base.json = sourceFormat === "csv" ? SAMPLE_CSV : SAMPLE_JSON;
+  }
   if (kind === "fields") {
     base.selectedPath = "/stores";
     base.selectedFields = ["name"];
@@ -279,12 +318,15 @@ function addNode(kind: NodeKind) {
   }
   if (kind === "output") {
     base.delimiter = ", ";
+    base.csvDelimiter = ",";
+    base.outputFormat = outputFormat;
+    base.tableName = "result";
     base.output = "";
     base.stats = null;
   }
   nodes.value.push(base);
   selectedNodeId.value = id;
-  setNotice(`Блок «${NODE_META[kind].label}» добавлен`);
+  setNotice(`Блок «${kind === "source" ? sourceFormat.toUpperCase() : kind === "output" ? outputFormat.toUpperCase() : NODE_META[kind].label}» добавлен`);
   scheduleRender();
 }
 
@@ -503,6 +545,8 @@ async function executeGraph() {
         const reply = await client!.request<AnalyzeResponse>({
           action: "analyze",
           json: sourceNode.json ?? "",
+          source_format: sourceNode.sourceFormat ?? "json",
+          csv_delimiter: sourceNode.csvDelimiter ?? ",",
         });
         if (token !== executionToken) return;
         engineVersion.value = reply.engineVersion;
@@ -541,7 +585,7 @@ async function executeGraph() {
         if (!sourceNode || !fieldNode) {
           outputNode.output = "";
           outputNode.stats = null;
-          outputNode.error = "Соедините источник JSON и блок полей";
+          outputNode.error = "Соедините источник данных и блок полей";
           return;
         }
         const selectedFields = fieldNode.selectedFields ?? [];
@@ -562,6 +606,11 @@ async function executeGraph() {
           unique: false,
           filters: filters.map(({ field, operator, value }) => ({ field, operator, value })),
           filter_mode: conditionNodes[0]?.filterMode ?? "all",
+          source_format: sourceNode.sourceFormat ?? "json",
+          csv_delimiter: sourceNode.csvDelimiter ?? ",",
+          output_format: outputNode.outputFormat ?? "flat",
+          output_csv_delimiter: outputNode.csvDelimiter ?? ",",
+          table_name: outputNode.tableName ?? "result",
         });
         if (token !== executionToken) return;
         engineVersion.value = reply.engineVersion;
@@ -679,17 +728,17 @@ onBeforeUnmount(() => {
         </div>
         <div class="library-list">
           <button
-            v-for="kind in (Object.keys(NODE_META) as NodeKind[])"
-            :key="kind"
+            v-for="block in LIBRARY_BLOCKS"
+            :key="block.key"
             type="button"
             class="library-item"
-            :style="{ '--node-color': nodeMeta(kind).color }"
-            @click="addNode(kind)"
+            :style="{ '--node-color': block.color }"
+            @click="addNode(block.kind, block.format, block.outputFormat)"
           >
-            <span class="library-icon">{{ nodeMeta(kind).icon }}</span>
+            <span class="library-icon">{{ block.icon }}</span>
             <span>
-              <strong>{{ nodeMeta(kind).label }}</strong>
-              <small>{{ nodeMeta(kind).eyebrow }}</small>
+              <strong>{{ block.label }}</strong>
+              <small>{{ block.eyebrow }}</small>
             </span>
             <b>+</b>
           </button>
@@ -711,7 +760,7 @@ onBeforeUnmount(() => {
           :class="[`node-${node.kind}`, { selected: selectedNodeId === node.id }]"
           :style="{
             transform: `translate(${node.x}px, ${node.y}px)`,
-            '--node-color': nodeMeta(node.kind).color,
+            '--node-color': nodeDisplayMeta(node).color,
           }"
           @pointerdown.stop="selectedNodeId = node.id"
         >
@@ -727,9 +776,9 @@ onBeforeUnmount(() => {
           ></button>
 
           <header class="node-heading" @pointerdown.stop="startNodeDrag($event, node)">
-            <span class="node-icon">{{ nodeMeta(node.kind).icon }}</span>
+            <span class="node-icon">{{ nodeDisplayMeta(node).icon }}</span>
             <div>
-              <small>{{ nodeMeta(node.kind).eyebrow }}</small>
+              <small>{{ nodeDisplayMeta(node).eyebrow }}</small>
               <input v-model="node.title" aria-label="Название блока" @pointerdown.stop />
             </div>
             <button
@@ -743,8 +792,16 @@ onBeforeUnmount(() => {
 
           <div class="node-body" @pointerdown.stop>
             <template v-if="node.kind === 'source'">
+              <div class="source-format-row">
+                <span>Формат</span>
+                <strong>{{ (node.sourceFormat ?? 'json').toUpperCase() }}</strong>
+                <label v-if="node.sourceFormat === 'csv'">
+                  Разделитель
+                  <input v-model="node.csvDelimiter" maxlength="1" aria-label="Разделитель CSV" />
+                </label>
+              </div>
               <div class="node-label-row">
-                <span>JSON</span>
+                <span>{{ (node.sourceFormat ?? 'json').toUpperCase() }}</span>
                 <small v-if="analyses[node.id]" class="node-ok">корректный</small>
                 <small v-else-if="node.error" class="node-bad">ошибка</small>
               </div>
@@ -752,11 +809,11 @@ onBeforeUnmount(() => {
                 v-model="node.json"
                 class="node-code-input"
                 spellcheck="false"
-                aria-label="Исходный JSON блока"
+                :aria-label="`Исходные данные ${node.sourceFormat ?? 'json'}`"
               ></textarea>
               <p v-if="node.error" class="node-error">{{ node.error }}</p>
               <div v-else-if="analyses[node.id]" class="source-stats">
-                <span>{{ analyses[node.id]?.array_paths.length }} массив</span>
+                <span>{{ analyses[node.id]?.array_paths.length }} набор</span>
                 <span>{{ (node.json ?? '').length }} символов</span>
               </div>
             </template>
@@ -847,9 +904,26 @@ onBeforeUnmount(() => {
             </template>
 
             <template v-else>
-              <label class="node-control compact-control">
+              <label class="node-control compact-control output-format-control">
+                <span>Формат</span>
+                <select v-model="node.outputFormat" aria-label="Формат результата">
+                  <option value="flat">Плоский список</option>
+                  <option value="json">JSON</option>
+                  <option value="csv">CSV</option>
+                  <option value="sql">SQL INSERT</option>
+                </select>
+              </label>
+              <label v-if="node.outputFormat === 'flat'" class="node-control compact-control">
                 <span>Разделитель</span>
                 <input v-model="node.delimiter" maxlength="12" />
+              </label>
+              <label v-else-if="node.outputFormat === 'csv'" class="node-control compact-control">
+                <span>Разделитель CSV</span>
+                <input v-model="node.csvDelimiter" maxlength="1" />
+              </label>
+              <label v-else-if="node.outputFormat === 'sql'" class="node-control compact-control table-control">
+                <span>Таблица</span>
+                <input v-model="node.tableName" maxlength="64" placeholder="stores" />
               </label>
               <div class="node-label-row">
                 <span>Результат</span>

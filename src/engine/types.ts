@@ -20,6 +20,8 @@ export interface ArrayInfo {
 }
 
 export type FilterMode = "all" | "any";
+export type SourceFormat = "json" | "csv";
+export type OutputFormat = "flat" | "json" | "csv" | "sql";
 
 export type FilterOperator =
   | "equal"
@@ -41,13 +43,20 @@ export interface FilterCondition {
 }
 
 export type EngineRequest =
-  | { action: "analyze"; json: string }
+  | {
+      action: "analyze";
+      json: string;
+      source_format: SourceFormat;
+      csv_delimiter: string;
+    }
   | {
       action: "filter_preview";
       json: string;
       path: string;
       filters: FilterCondition[];
       filter_mode: FilterMode;
+      source_format?: SourceFormat;
+      csv_delimiter?: string;
     }
   | {
       action: "transform";
@@ -59,6 +68,11 @@ export type EngineRequest =
       unique: boolean;
       filters: FilterCondition[];
       filter_mode: FilterMode;
+      source_format: SourceFormat;
+      csv_delimiter: string;
+      output_format: OutputFormat;
+      output_csv_delimiter: string;
+      table_name: string;
     };
 
 export interface AnalyzeSuccess {
