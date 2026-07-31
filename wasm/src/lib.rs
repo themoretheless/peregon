@@ -42,6 +42,14 @@ enum EngineRequest {
     Analyze {
         json: String,
     },
+    FilterPreview {
+        json: String,
+        path: String,
+        #[serde(default)]
+        filters: Vec<FilterCondition>,
+        #[serde(default)]
+        filter_mode: FilterMode,
+    },
     Transform {
         json: String,
         path: String,
@@ -87,6 +95,12 @@ pub fn process_json(request_json: &str) -> String {
 fn handle_request(request: EngineRequest) -> Value {
     match request {
         EngineRequest::Analyze { json } => analyze(&json),
+        EngineRequest::FilterPreview {
+            json,
+            path,
+            filters,
+            filter_mode,
+        } => filter_preview(&json, &path, &filters, filter_mode),
         EngineRequest::Transform {
             json,
             path,
@@ -107,6 +121,67 @@ fn handle_request(request: EngineRequest) -> Value {
             filter_mode,
         ),
     }
+}
+
+fn filter_preview(
+    input: &str,
+    path: &str,
+    filters: &[FilterCondition],
+    filter_mode: FilterMode,
+) -> Value {
+    let value = match parse_json(input) {
+        Ok(value) => value,
+        Err(problem) => {
+            return error_response(
+                &format!("Некорректный JSON: {}", problem.message),
+                problem.line,
+                problem.column,
+            )
+        }
+    };
+
+    let selected = if path.is_empty() {
+        &value
+    } else {
+        match value.pointer(path) {
+            Some(selected) => selected,
+            None => return error_response("Выбранный путь больше не существует", 0, 0),
+        }
+    };
+
+    let Value::Array(items) = selected else {
+        return error_response("По выбранному пути находится не массив", 0, 0);
+    };
+
+    let mut matched = Vec::new();
+    let mut object_items = 0usize;
+    let mut filtered_out = 0usize;
+    let mut skipped_items = 0usize;
+
+    for item in items {
+        let Value::Object(object) = item else {
+            skipped_items += 1;
+            continue;
+        };
+        object_items += 1;
+
+        if matches_filters(object, filters, filter_mode) {
+            matched.push(item);
+        } else {
+            filtered_out += 1;
+        }
+    }
+
+    json!({
+        "ok": true,
+        "input_json": serde_json::to_string_pretty(items).unwrap_or_else(|_| "[]".to_owned()),
+        "output_json": serde_json::to_string_pretty(&matched).unwrap_or_else(|_| "[]".to_owned()),
+        "source_items": items.len(),
+        "object_items": object_items,
+        "matched_items": matched.len(),
+        "filtered_out": filtered_out,
+        "skipped_items": skipped_items,
+    })
 }
 
 fn parse_json(input: &str) -> Result<Value, ParseProblem> {
@@ -597,6 +672,68 @@ mod tests {
         }));
         assert_eq!(result["output"], "Активный");
         assert_eq!(result["matched_items"], 1);
+        assert_eq!(result["filtered_out"], 2);
+    }
+
+    #[test]
+    fn previews_items_before_and_after_filtering() {
+        let input = r#"{
+            "meta":{"page":1},
+            "stores":[
+                {"id":9007199254740993,"name":"Активный","state":1,"details":{"city":"Москва"}},
+                {"id":2,"name":"Скрытый","state":0},
+                {"id":3,"name":"Без статуса"},
+                "не объект"
+            ]
+        }"#;
+        let result = request(json!({
+            "action": "filter_preview",
+            "json": input,
+            "path": "/stores",
+            "filters": [{"field":"state","operator":"equal","value":"1"}],
+            "filter_mode": "all"
+        }));
+
+        let before: Value = serde_json::from_str(result["input_json"].as_str().unwrap()).unwrap();
+        let after: Value = serde_json::from_str(result["output_json"].as_str().unwrap()).unwrap();
+        assert_eq!(before.as_array().unwrap().len(), 4);
+        assert_eq!(
+            after,
+            json!([{
+                "id": 9007199254740993u64,
+                "name": "Активный",
+                "state": 1,
+                "details": {"city": "Москва"}
+            }])
+        );
+        assert_eq!(after[0]["name"], "Активный");
+        assert!(result["input_json"]
+            .as_str()
+            .unwrap()
+            .contains("9007199254740993"));
+        assert!(result["output_json"]
+            .as_str()
+            .unwrap()
+            .contains("9007199254740993"));
+        assert_eq!(result["source_items"], 4);
+        assert_eq!(result["object_items"], 3);
+        assert_eq!(result["matched_items"], 1);
+        assert_eq!(result["filtered_out"], 2);
+        assert_eq!(result["skipped_items"], 1);
+    }
+
+    #[test]
+    fn preview_returns_an_empty_array_when_nothing_matches() {
+        let result = request(json!({
+            "action": "filter_preview",
+            "json": r#"[{"state":1},{"state":0}]"#,
+            "path": "",
+            "filters": [{"field":"state","operator":"equal","value":"2"}],
+            "filter_mode": "all"
+        }));
+
+        assert_eq!(result["output_json"], "[]");
+        assert_eq!(result["matched_items"], 0);
         assert_eq!(result["filtered_out"], 2);
     }
 

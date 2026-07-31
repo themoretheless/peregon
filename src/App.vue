@@ -15,6 +15,8 @@ import type {
   FilterCondition,
   FilterMode,
   FilterOperator,
+  FilterPreviewResponse,
+  FilterPreviewSuccess,
   TransformResponse,
   TransformSuccess,
 } from "./engine/types";
@@ -83,6 +85,10 @@ const filterMode = ref<FilterMode>("all");
 const filterConditions = ref<UiFilterCondition[]>([
   { id: 1, field: "state", operator: "equal", value: "1" },
 ]);
+const filterInspectorOpen = ref(false);
+const filterPreview = ref<FilterPreviewSuccess | null>(null);
+const filterPreviewError = ref("");
+const isPreviewingFilter = ref(false);
 const delimiter = ref(", ");
 const skipEmpty = ref(true);
 const unique = ref(false);
@@ -95,13 +101,17 @@ const durationMs = ref(0);
 const copyState = ref<"idle" | "done" | "error">("idle");
 const editor = ref<HTMLTextAreaElement | null>(null);
 const lineGutter = ref<HTMLElement | null>(null);
+const conditionInspectorTrigger = ref<HTMLButtonElement | null>(null);
+const filterInspectorClose = ref<HTMLButtonElement | null>(null);
 
 let client: JsonEngineClient | null = null;
 let analyzeTimer: number | undefined;
 let transformTimer: number | undefined;
+let filterPreviewTimer: number | undefined;
 let copyTimer: number | undefined;
 let analyzeToken = 0;
 let transformToken = 0;
+let filterPreviewToken = 0;
 let nextFilterId = 2;
 
 const inputBytes = computed(() => new TextEncoder().encode(jsonInput.value).length);
@@ -282,6 +292,114 @@ function scheduleTransform(immediate = false) {
   transformTimer = window.setTimeout(runTransform, immediate ? 0 : 120);
 }
 
+function scheduleFilterPreview(immediate = false) {
+  window.clearTimeout(filterPreviewTimer);
+  filterPreviewTimer = window.setTimeout(runFilterPreview, immediate ? 0 : 120);
+}
+
+async function runFilterPreview() {
+  if (!filterInspectorOpen.value) {
+    filterPreviewToken += 1;
+    filterPreview.value = null;
+    filterPreviewError.value = "";
+    isPreviewingFilter.value = false;
+    return;
+  }
+
+  if (
+    !client ||
+    !analysis.value ||
+    !currentArray.value ||
+    !jsonInput.value.trim() ||
+    inputBytes.value > MAX_INPUT_BYTES
+  ) {
+    filterPreviewToken += 1;
+    filterPreview.value = null;
+    filterPreviewError.value = inputBytes.value > MAX_INPUT_BYTES
+      ? "Файл больше 12 МБ — просмотр отключён, чтобы не перегружать вкладку."
+      : "Входной массив сейчас недоступен. Проверьте исходный JSON.";
+    isPreviewingFilter.value = false;
+    return;
+  }
+
+  const token = ++filterPreviewToken;
+  isPreviewingFilter.value = true;
+  filterPreviewError.value = "";
+
+  try {
+    const reply = await client.request<FilterPreviewResponse>({
+      action: "filter_preview",
+      json: jsonInput.value,
+      path: selectedPath.value,
+      filters: engineFilters.value,
+      filter_mode: filterMode.value,
+    });
+    if (token !== filterPreviewToken) return;
+
+    engineVersion.value = reply.engineVersion;
+    if (!reply.response.ok) {
+      filterPreview.value = null;
+      filterPreviewError.value = reply.response.error.message;
+      return;
+    }
+
+    filterPreview.value = reply.response;
+  } catch (error) {
+    if (token === filterPreviewToken) {
+      filterPreview.value = null;
+      filterPreviewError.value =
+        error instanceof Error ? error.message : "Не удалось получить данные фильтра";
+    }
+  } finally {
+    if (token === filterPreviewToken) isPreviewingFilter.value = false;
+  }
+}
+
+async function openFilterInspector() {
+  if (!currentArray.value) return;
+  filterPreview.value = null;
+  filterPreviewError.value = "";
+  filterInspectorOpen.value = true;
+  document.body.classList.add("filter-inspector-open");
+  document.querySelector<HTMLElement>(".app-shell")?.setAttribute("inert", "");
+  await nextTick();
+  filterInspectorClose.value?.focus();
+  scheduleFilterPreview(true);
+}
+
+function closeFilterInspector() {
+  filterInspectorOpen.value = false;
+  filterPreviewToken += 1;
+  window.clearTimeout(filterPreviewTimer);
+  filterPreview.value = null;
+  filterPreviewError.value = "";
+  isPreviewingFilter.value = false;
+  document.body.classList.remove("filter-inspector-open");
+  document.querySelector<HTMLElement>(".app-shell")?.removeAttribute("inert");
+  nextTick(() => conditionInspectorTrigger.value?.focus());
+}
+
+function trapFilterInspectorFocus(event: KeyboardEvent) {
+  if (event.key !== "Tab") return;
+  const dialog = event.currentTarget as HTMLElement;
+  const focusable = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  if (!focusable.length) return;
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 async function runTransform() {
   if (!client || !analysis.value || !currentArray.value || !selectedFields.value.length) {
     result.value = null;
@@ -453,6 +571,11 @@ function syncEditorScroll() {
 }
 
 function handleShortcut(event: KeyboardEvent) {
+  if (event.key === "Escape" && filterInspectorOpen.value) {
+    event.preventDefault();
+    closeFilterInspector();
+    return;
+  }
   if (!(event.metaKey || event.ctrlKey)) return;
   if (event.key === "Enter") {
     event.preventDefault();
@@ -476,6 +599,13 @@ watch(
   ],
   () => scheduleTransform(),
 );
+watch([jsonInput, selectedPath, filterSignature], () => {
+  filterPreviewToken += 1;
+  filterPreview.value = null;
+  filterPreviewError.value = "";
+  isPreviewingFilter.value = false;
+  if (filterInspectorOpen.value) scheduleFilterPreview();
+});
 
 onMounted(async () => {
   client = new JsonEngineClient();
@@ -487,8 +617,11 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.clearTimeout(analyzeTimer);
   window.clearTimeout(transformTimer);
+  window.clearTimeout(filterPreviewTimer);
   window.clearTimeout(copyTimer);
   window.removeEventListener("keydown", handleShortcut);
+  document.body.classList.remove("filter-inspector-open");
+  document.querySelector<HTMLElement>(".app-shell")?.removeAttribute("inert");
   client?.terminate();
 });
 </script>
@@ -708,7 +841,11 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <section class="panel condition-panel" aria-labelledby="condition-title">
+          <section
+            class="panel condition-panel"
+            :class="{ inspecting: filterInspectorOpen }"
+            aria-labelledby="condition-title"
+          >
             <div class="panel-heading compact">
               <div>
                 <span class="step-number condition-accent">03</span>
@@ -717,8 +854,23 @@ onBeforeUnmount(() => {
                   <h2 id="condition-title">Условия фильтрации</h2>
                 </div>
               </div>
-              <span v-if="filterConditions.length" class="condition-count">
-                {{ filterConditions.length }}
+              <span class="condition-heading-meta">
+                <span v-if="filterConditions.length" class="condition-count">
+                  {{ filterConditions.length }}
+                </span>
+                <button
+                  ref="conditionInspectorTrigger"
+                  type="button"
+                  class="inspect-hint"
+                  :disabled="!currentArray"
+                  aria-label="Показать JSON до и после условий"
+                  aria-haspopup="dialog"
+                  :aria-expanded="filterInspectorOpen"
+                  aria-controls="filter-inspector"
+                  @click="openFilterInspector"
+                >
+                  До / после <b aria-hidden="true">↗</b>
+                </button>
               </span>
             </div>
 
@@ -947,5 +1099,101 @@ onBeforeUnmount(() => {
         <p class="shortcuts"><kbd>⌘/Ctrl</kbd> + <kbd>Enter</kbd> преобразовать · <kbd>⇧</kbd> + <kbd>⌘/Ctrl</kbd> + <kbd>C</kbd> копировать</p>
       </footer>
     </main>
+
+    <Teleport to="body">
+      <div
+        v-if="filterInspectorOpen"
+        class="filter-inspector-backdrop"
+        @click.self="closeFilterInspector"
+      >
+        <section
+          id="filter-inspector"
+          class="filter-inspector"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="filter-inspector-title"
+          :aria-busy="isPreviewingFilter"
+          @keydown="trapFilterInspectorFocus"
+        >
+          <header class="filter-inspector-header">
+            <div class="filter-inspector-title">
+              <span class="step-number condition-accent">03</span>
+              <div>
+                <p>Поток данных через условия</p>
+                <h2 id="filter-inspector-title">До и после фильтрации</h2>
+              </div>
+            </div>
+            <div class="filter-inspector-actions">
+              <span v-if="isPreviewingFilter" class="working"><i></i> Обновление…</span>
+              <button
+                ref="filterInspectorClose"
+                type="button"
+                class="filter-inspector-close"
+                aria-label="Закрыть просмотр данных"
+                @click="closeFilterInspector"
+              >
+                ×
+              </button>
+            </div>
+          </header>
+
+          <div class="filter-inspector-rule">
+            <span aria-hidden="true">ƒ</span>
+            <code>{{ filterSummary }}</code>
+          </div>
+
+          <div v-if="filterPreviewError" class="message error-message inspector-message" role="alert">
+            <strong>Просмотр недоступен</strong>
+            <span>{{ filterPreviewError }}</span>
+          </div>
+
+          <div v-else-if="isPreviewingFilter || !filterPreview" class="filter-inspector-loading" role="status">
+            <span class="working"><i></i> Rust/WASM готовит сравнение…</span>
+          </div>
+
+          <div v-else class="filter-flow-grid">
+            <article class="filter-flow-pane incoming-pane">
+              <header>
+                <div>
+                  <span class="flow-label">Вход</span>
+                  <h3>Пришло в условие</h3>
+                </div>
+                <span class="flow-count">
+                  {{ filterPreview.source_items }} элементов
+                </span>
+              </header>
+              <pre tabindex="0" aria-label="JSON до фильтрации">{{ filterPreview.input_json }}</pre>
+            </article>
+
+            <div class="filter-flow-arrow" aria-hidden="true">
+              <span>→</span>
+              <small>Rust<br />WASM</small>
+            </div>
+
+            <article class="filter-flow-pane outgoing-pane">
+              <header>
+                <div>
+                  <span class="flow-label">Выход</span>
+                  <h3>Прошло условие</h3>
+                </div>
+                <span class="flow-count passed">
+                  {{ filterPreview.matched_items }} объектов
+                </span>
+              </header>
+              <pre tabindex="0" aria-label="JSON после фильтрации">{{ filterPreview.output_json }}</pre>
+            </article>
+          </div>
+
+          <footer v-if="filterPreview" class="filter-inspector-stats">
+            <span><strong>{{ filterPreview.object_items }}</strong> объектов на входе</span>
+            <span><strong>{{ filterPreview.matched_items }}</strong> прошло</span>
+            <span><strong>{{ filterPreview.filtered_out }}</strong> отсеяно</span>
+            <span v-if="filterPreview.skipped_items">
+              <strong>{{ filterPreview.skipped_items }}</strong> не-объектов пропущено
+            </span>
+          </footer>
+        </section>
+      </div>
+    </Teleport>
   </div>
 </template>

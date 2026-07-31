@@ -43,6 +43,13 @@ export interface FilterCondition {
 export type EngineRequest =
   | { action: "analyze"; json: string }
   | {
+      action: "filter_preview";
+      json: string;
+      path: string;
+      filters: FilterCondition[];
+      filter_mode: FilterMode;
+    }
+  | {
       action: "transform";
       json: string;
       path: string;
@@ -73,12 +80,24 @@ export interface TransformSuccess {
   values: number;
 }
 
+export interface FilterPreviewSuccess {
+  ok: true;
+  input_json: string;
+  output_json: string;
+  source_items: number;
+  object_items: number;
+  matched_items: number;
+  filtered_out: number;
+  skipped_items: number;
+}
+
 export interface EngineFailure {
   ok: false;
   error: EngineError;
 }
 
 export type AnalyzeResponse = AnalyzeSuccess | EngineFailure;
+export type FilterPreviewResponse = FilterPreviewSuccess | EngineFailure;
 export type TransformResponse = TransformSuccess | EngineFailure;
 
 export interface TimedResponse<T> {
