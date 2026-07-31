@@ -56,6 +56,12 @@ interface FlowEdge {
   to: string;
 }
 
+interface EdgeVisual extends FlowEdge {
+  path: string;
+  midX: number;
+  midY: number;
+}
+
 const SAMPLE_JSON = `{
   "stores": [
     {
@@ -164,6 +170,8 @@ const panY = ref(0);
 const zoom = ref(0.8);
 const selectedNodeId = ref("");
 const connectingFrom = ref("");
+const connectionPreview = ref<{ x: number; y: number } | null>(null);
+const edgeVisuals = ref<EdgeVisual[]>([]);
 const gpuMode = ref<"loading" | "webgpu" | "canvas">("loading");
 const engineVersion = ref("");
 const isRunning = ref(false);
@@ -180,6 +188,7 @@ let nextNodeId = 2;
 let nextEdgeId = 4;
 let nextConditionId = 2;
 let noticeTimer: number | undefined;
+let connectionDrag: { fromId: string; startX: number; startY: number; moved: boolean } | null = null;
 
 type Gesture =
   | { type: "pan"; startX: number; startY: number; originX: number; originY: number }
@@ -358,13 +367,79 @@ function handlePort(nodeId: string, direction: PortDirection) {
     setNotice("Нельзя соединить блок с самим собой");
     return;
   }
-  const exists = edges.value.some((edge) => edge.from === connectingFrom.value && edge.to === nodeId);
-  if (!exists) {
-    edges.value.push({ id: `edge-${nextEdgeId++}`, from: connectingFrom.value, to: nodeId });
-    setNotice("Блоки соединены — ветвление поддерживается");
-  }
+  connectNodes(connectingFrom.value, nodeId);
   connectingFrom.value = "";
   scheduleRender();
+}
+
+function connectNodes(fromId: string, toId: string) {
+  if (fromId === toId) {
+    setNotice("Нельзя соединить блок с самим собой");
+    return;
+  }
+  const exists = edges.value.some((edge) => edge.from === fromId && edge.to === toId);
+  if (!exists) {
+    edges.value.push({ id: `edge-${nextEdgeId++}`, from: fromId, to: toId });
+    setNotice("Блоки соединены — ветвление поддерживается");
+  }
+}
+
+function startConnectionDrag(event: PointerEvent, nodeId: string) {
+  if (event.button !== 0) return;
+  const bounds = board.value?.getBoundingClientRect();
+  if (!bounds) return;
+  event.preventDefault();
+  window.removeEventListener("pointermove", moveConnectionDrag);
+  window.removeEventListener("pointerup", finishConnectionDrag);
+  connectingFrom.value = nodeId;
+  connectionPreview.value = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  connectionDrag = { fromId: nodeId, startX: event.clientX, startY: event.clientY, moved: false };
+  window.addEventListener("pointermove", moveConnectionDrag);
+  window.addEventListener("pointerup", finishConnectionDrag, { once: true });
+  setNotice("Тяните линию к входной точке блока");
+  scheduleRender();
+}
+
+function moveConnectionDrag(event: PointerEvent) {
+  if (!connectionDrag) return;
+  const bounds = board.value?.getBoundingClientRect();
+  if (!bounds) return;
+  if (Math.hypot(event.clientX - connectionDrag.startX, event.clientY - connectionDrag.startY) > 4) {
+    connectionDrag.moved = true;
+  }
+  connectionPreview.value = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  scheduleRender();
+}
+
+function finishConnectionDrag(event: PointerEvent) {
+  const drag = connectionDrag;
+  window.removeEventListener("pointermove", moveConnectionDrag);
+  connectionDrag = null;
+  connectionPreview.value = null;
+  if (!drag) return;
+
+  const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+  const inputPort = target?.closest<HTMLElement>("[data-input-port]");
+  const targetId = inputPort?.dataset.inputPort;
+  if (targetId) {
+    connectNodes(drag.fromId, targetId);
+    connectingFrom.value = "";
+  } else if (drag.moved) {
+    connectingFrom.value = "";
+    setNotice("Связь отменена — отпустите линию на входной точке");
+  } else {
+    setNotice("Теперь нажмите входную точку нужного блока");
+  }
+  scheduleRender();
+}
+
+function cancelConnection(render = true) {
+  window.removeEventListener("pointermove", moveConnectionDrag);
+  window.removeEventListener("pointerup", finishConnectionDrag);
+  connectionDrag = null;
+  connectionPreview.value = null;
+  connectingFrom.value = "";
+  if (render) scheduleRender();
 }
 
 function toggleField(node: FlowNode, field: string) {
@@ -496,12 +571,30 @@ function scheduleRender() {
   });
 }
 
+function edgeGeometry(fromX: number, fromY: number, toX: number, toY: number) {
+  const distance = Math.max(80, Math.abs(toX - fromX) * 0.52);
+  const control1X = fromX + distance;
+  const control2X = toX - distance;
+  return {
+    path: `M ${fromX} ${fromY} C ${control1X} ${fromY}, ${control2X} ${toY}, ${toX} ${toY}`,
+    midX: (fromX + 3 * control1X + 3 * control2X + toX) / 8,
+    midY: (fromY + toY) / 2,
+  };
+}
+
 function renderSurface() {
   const canvas = surface.value;
   const boardElement = board.value;
   if (!canvas || !boardElement || !renderer) return;
   const canvasRect = canvas.getBoundingClientRect();
   const surfaceEdges: SurfaceEdge[] = [];
+  const visuals: EdgeVisual[] = [];
+  const colors: Record<NodeKind, [number, number, number, number]> = {
+    source: [0.4, 0.34, 0.85, 0.92],
+    fields: [0.21, 0.5, 0.73, 0.92],
+    condition: [0.08, 0.57, 0.53, 0.92],
+    output: [0.82, 0.42, 0.21, 0.92],
+  };
   for (const edge of edges.value) {
     const fromPort = boardElement.querySelector<HTMLElement>(`[data-output-port="${edge.from}"]`);
     const toPort = boardElement.querySelector<HTMLElement>(`[data-input-port="${edge.to}"]`);
@@ -509,20 +602,32 @@ function renderSurface() {
     const fromRect = fromPort.getBoundingClientRect();
     const toRect = toPort.getBoundingClientRect();
     const kind = nodeById(edge.from)?.kind ?? "source";
-    const colors: Record<NodeKind, [number, number, number, number]> = {
-      source: [0.4, 0.34, 0.85, 0.92],
-      fields: [0.21, 0.5, 0.73, 0.92],
-      condition: [0.08, 0.57, 0.53, 0.92],
-      output: [0.82, 0.42, 0.21, 0.92],
-    };
-    surfaceEdges.push({
+    const positioned = {
       fromX: fromRect.left + fromRect.width / 2 - canvasRect.left,
       fromY: fromRect.top + fromRect.height / 2 - canvasRect.top,
       toX: toRect.left + toRect.width / 2 - canvasRect.left,
       toY: toRect.top + toRect.height / 2 - canvasRect.top,
       color: colors[kind],
-    });
+    };
+    surfaceEdges.push(positioned);
+    visuals.push({ ...edge, ...edgeGeometry(positioned.fromX, positioned.fromY, positioned.toX, positioned.toY) });
   }
+
+  if (connectingFrom.value && connectionPreview.value) {
+    const fromPort = boardElement.querySelector<HTMLElement>(`[data-output-port="${connectingFrom.value}"]`);
+    if (fromPort) {
+      const fromRect = fromPort.getBoundingClientRect();
+      const kind = nodeById(connectingFrom.value)?.kind ?? "source";
+      surfaceEdges.push({
+        fromX: fromRect.left + fromRect.width / 2 - canvasRect.left,
+        fromY: fromRect.top + fromRect.height / 2 - canvasRect.top,
+        toX: connectionPreview.value.x,
+        toY: connectionPreview.value.y,
+        color: colors[kind],
+      });
+    }
+  }
+  edgeVisuals.value = visuals;
   renderer.render({ panX: panX.value, panY: panY.value, zoom: zoom.value, edges: surfaceEdges });
 }
 
@@ -647,7 +752,7 @@ function handleKeydown(event: KeyboardEvent) {
     event.preventDefault();
     removeNode(selectedNodeId.value);
   }
-  if (!editing && event.key === "Escape") connectingFrom.value = "";
+  if (!editing && event.key === "Escape") cancelConnection();
 }
 
 watch(geometrySignature, scheduleRender);
@@ -674,6 +779,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(noticeTimer);
   cancelAnimationFrame(renderFrame);
   endGesture();
+  cancelConnection(false);
   resizeObserver?.disconnect();
   renderer?.destroy();
   client?.terminate();
@@ -720,6 +826,25 @@ onBeforeUnmount(() => {
       @wheel="handleWheel"
     >
       <canvas ref="surface" class="flow-surface" aria-hidden="true"></canvas>
+      <svg class="edge-interactions" aria-label="Связи между блоками">
+        <g v-for="edge in edgeVisuals" :key="edge.id" class="edge-hit">
+          <path class="edge-hit-path" :d="edge.path" @pointerdown.stop />
+          <g
+            class="edge-delete"
+            :transform="`translate(${edge.midX} ${edge.midY})`"
+            role="button"
+            tabindex="0"
+            :aria-label="`Удалить связь ${nodeById(edge.from)?.title ?? ''} — ${nodeById(edge.to)?.title ?? ''}`"
+            @pointerdown.stop
+            @click.stop="removeEdge(edge.id)"
+            @keydown.enter.prevent="removeEdge(edge.id)"
+            @keydown.space.prevent="removeEdge(edge.id)"
+          >
+            <circle r="11"></circle>
+            <path d="M -3.5 -3.5 L 3.5 3.5 M 3.5 -3.5 L -3.5 3.5"></path>
+          </g>
+        </g>
+      </svg>
 
       <aside class="block-library" aria-label="Библиотека блоков" @pointerdown.stop>
         <div class="library-heading">
@@ -745,7 +870,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="library-tip">
           <span>⌘</span>
-          <p>Выход блока можно подключить к нескольким входам.</p>
+          <p>Тяните связь от точки к точке. Наведите на линию, чтобы удалить.</p>
         </div>
       </aside>
 
@@ -846,7 +971,7 @@ onBeforeUnmount(() => {
                   <small>{{ field.kind }}</small>
                 </button>
               </div>
-              <div v-else class="node-empty">Подключите блок JSON</div>
+              <div v-else class="node-empty">Подключите источник данных</div>
             </template>
 
             <template v-else-if="node.kind === 'condition'">
@@ -959,9 +1084,8 @@ onBeforeUnmount(() => {
             class="node-port output-port"
             :class="{ active: connectingFrom === node.id }"
             :data-output-port="node.id"
-            :aria-label="`Начать связь из блока ${node.title}`"
-            @pointerdown.stop
-            @click.stop="handlePort(node.id, 'output')"
+            :aria-label="`Перетащить связь из блока ${node.title}`"
+            @pointerdown.stop="startConnectionDrag($event, node.id)"
           ></button>
         </article>
       </div>

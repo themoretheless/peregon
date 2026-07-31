@@ -256,6 +256,52 @@ textarea:focus-visible {
   height: 100%;
 }
 
+.edge-interactions {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.edge-hit-path {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18px;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.edge-delete {
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.edge-hit:hover .edge-delete,
+.edge-delete:focus {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.edge-delete circle {
+  fill: #c94d43;
+  stroke: #fffefa;
+  stroke-width: 3px;
+  filter: drop-shadow(0 3px 5px rgba(57, 27, 24, 0.25));
+}
+
+.edge-delete path {
+  fill: none;
+  stroke: white;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
 .block-library {
   position: absolute;
   z-index: 10;
