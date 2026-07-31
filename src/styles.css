@@ -153,6 +153,42 @@ textarea:focus-visible {
   gap: 7px;
 }
 
+.file-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-actions button {
+  min-height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #dedfd9;
+  border-radius: 8px;
+  color: #666c65;
+  background: #fbfbf7;
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.file-actions button:hover {
+  color: #5145b7;
+  border-color: rgba(101, 87, 217, 0.3);
+  background: rgba(101, 87, 217, 0.06);
+}
+
+.file-actions button > span:first-child {
+  color: #6557d9;
+  font-size: 11px;
+}
+
+.file-input {
+  display: none;
+}
+
 .runtime-pill {
   min-height: 30px;
   padding: 0 9px;
@@ -1306,6 +1342,16 @@ textarea:focus-visible {
 
   .runtime-pill.wasm {
     display: none;
+  }
+
+  .file-label {
+    display: none;
+  }
+
+  .file-actions button {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
   }
 
   .block-library {

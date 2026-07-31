@@ -80,6 +80,15 @@ interface BlockDefinition {
   keywords: string;
 }
 
+interface PipelineFile {
+  format: "json-rivet-pipeline";
+  version: 1;
+  savedAt: string;
+  view: { panX: number; panY: number; zoom: number };
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+}
+
 const SAMPLE_JSON = `{
   "stores": [
     {
@@ -199,6 +208,7 @@ const notice = ref("Перетащите блок или соедините по
 const continuationFor = ref("");
 const continuationQuery = ref("");
 const continuationSearchInput = ref<HTMLInputElement | null>(null);
+const pipelineFileInput = ref<HTMLInputElement | null>(null);
 
 let client: JsonEngineClient | null = null;
 let renderer: FlowSurfaceRenderer | null = null;
@@ -652,6 +662,157 @@ function resetGraph() {
   window.location.reload();
 }
 
+function savePipelineFile() {
+  const cleanNodes = nodes.value.map(({ output: _output, stats: _stats, error: _error, ...node }) => node);
+  const pipeline: PipelineFile = {
+    format: "json-rivet-pipeline",
+    version: 1,
+    savedAt: new Date().toISOString(),
+    view: { panX: panX.value, panY: panY.value, zoom: zoom.value },
+    nodes: cleanNodes,
+    edges: edges.value,
+  };
+  const blob = new Blob([JSON.stringify(pipeline, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 19).replaceAll(":", "-");
+  link.href = url;
+  link.download = `json-rivet-${stamp}.json`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  setNotice("Схема сохранена в файл");
+}
+
+function openPipelineFile() {
+  if (!pipelineFileInput.value) return;
+  pipelineFileInput.value.value = "";
+  pipelineFileInput.value.click();
+}
+
+function parsePipelineFile(value: unknown): PipelineFile {
+  if (!value || typeof value !== "object") throw new Error("Файл не содержит схему");
+  const raw = value as Record<string, unknown>;
+  if (raw.format !== "json-rivet-pipeline" || raw.version !== 1) {
+    throw new Error("Неподдерживаемый формат файла");
+  }
+  if (!Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) throw new Error("В файле нет блоков или связей");
+  if (raw.nodes.length > 500 || raw.edges.length > 2000) throw new Error("Схема слишком большая");
+
+  const operatorNames = new Set(FILTER_OPERATORS.map((operator) => operator.value));
+  const ids = new Set<string>();
+  const importedNodes: FlowNode[] = raw.nodes.map((candidate, index) => {
+    if (!candidate || typeof candidate !== "object") throw new Error(`Некорректный блок ${index + 1}`);
+    const node = candidate as Record<string, unknown>;
+    const id = typeof node.id === "string" ? node.id.slice(0, 120) : "";
+    const kind = node.kind;
+    if (!id || ids.has(id) || !["source", "fields", "condition", "output"].includes(String(kind))) {
+      throw new Error(`Некорректный блок ${index + 1}`);
+    }
+    ids.add(id);
+    const imported: FlowNode = {
+      id,
+      kind: kind as NodeKind,
+      title: typeof node.title === "string" ? node.title.slice(0, 120) : `Блок ${index + 1}`,
+      x: typeof node.x === "number" && Number.isFinite(node.x) ? node.x : index * 390,
+      y: typeof node.y === "number" && Number.isFinite(node.y) ? node.y : 100,
+    };
+    if (imported.kind === "source") {
+      imported.sourceFormat = node.sourceFormat === "csv" ? "csv" : "json";
+      imported.csvDelimiter = typeof node.csvDelimiter === "string" ? node.csvDelimiter.slice(0, 1) || "," : ",";
+      imported.json = typeof node.json === "string" ? node.json : "";
+    } else if (imported.kind === "fields") {
+      imported.selectedPath = typeof node.selectedPath === "string" ? node.selectedPath : "";
+      imported.selectedFields = Array.isArray(node.selectedFields)
+        ? node.selectedFields.filter((field): field is string => typeof field === "string").slice(0, 200)
+        : [];
+    } else if (imported.kind === "condition") {
+      imported.filterMode = node.filterMode === "any" ? "any" : "all";
+      imported.conditions = Array.isArray(node.conditions)
+        ? node.conditions.slice(0, 100).flatMap((item, conditionIndex) => {
+            if (!item || typeof item !== "object") return [];
+            const condition = item as Record<string, unknown>;
+            if (typeof condition.field !== "string" || !operatorNames.has(condition.operator as FilterOperator)) return [];
+            return [{
+              id: typeof condition.id === "number" && Number.isFinite(condition.id) ? condition.id : conditionIndex + 1,
+              field: condition.field.slice(0, 200),
+              operator: condition.operator as FilterOperator,
+              value: typeof condition.value === "string" ? condition.value.slice(0, 10000) : "",
+            }];
+          })
+        : [];
+    } else {
+      imported.outputFormat = ["flat", "json", "csv", "sql"].includes(String(node.outputFormat))
+        ? node.outputFormat as OutputFormat
+        : "flat";
+      imported.delimiter = typeof node.delimiter === "string" ? node.delimiter.slice(0, 12) : ", ";
+      imported.csvDelimiter = typeof node.csvDelimiter === "string" ? node.csvDelimiter.slice(0, 1) || "," : ",";
+      imported.tableName = typeof node.tableName === "string" ? node.tableName.slice(0, 64) : "result";
+      imported.output = "";
+      imported.stats = null;
+    }
+    return imported;
+  });
+
+  const edgeIds = new Set<string>();
+  const importedEdges: FlowEdge[] = raw.edges.flatMap((candidate, index) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const edge = candidate as Record<string, unknown>;
+    const from = typeof edge.from === "string" ? edge.from : "";
+    const to = typeof edge.to === "string" ? edge.to : "";
+    if (!ids.has(from) || !ids.has(to) || from === to) return [];
+    const id = typeof edge.id === "string" && edge.id && !edgeIds.has(edge.id) ? edge.id.slice(0, 120) : `edge-${index + 1}`;
+    if (edgeIds.has(id)) return [];
+    edgeIds.add(id);
+    return [{ id, from, to }];
+  });
+  const view = raw.view && typeof raw.view === "object" ? raw.view as Record<string, unknown> : {};
+  return {
+    format: "json-rivet-pipeline",
+    version: 1,
+    savedAt: typeof raw.savedAt === "string" ? raw.savedAt : "",
+    view: {
+      panX: typeof view.panX === "number" && Number.isFinite(view.panX) ? view.panX : 0,
+      panY: typeof view.panY === "number" && Number.isFinite(view.panY) ? view.panY : 0,
+      zoom: typeof view.zoom === "number" && Number.isFinite(view.zoom) ? Math.min(1.65, Math.max(0.42, view.zoom)) : 0.8,
+    },
+    nodes: importedNodes,
+    edges: importedEdges,
+  };
+}
+
+async function loadPipelineFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 10 * 1024 * 1024) throw new Error("Файл больше 10 МБ");
+    const pipeline = parsePipelineFile(JSON.parse(await file.text()));
+    executionToken += 1;
+    nodes.value = pipeline.nodes;
+    edges.value = pipeline.edges;
+    panX.value = pipeline.view.panX;
+    panY.value = pipeline.view.panY;
+    zoom.value = pipeline.view.zoom;
+    selectedNodeId.value = "";
+    closeContinuation();
+    cancelConnection(false);
+    for (const key of Object.keys(analyses)) delete analyses[key];
+    analysisCache.clear();
+    outputCache.clear();
+    nextNodeId = Math.max(1, ...pipeline.nodes.map((node) => Number(node.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
+    nextEdgeId = Math.max(1, ...pipeline.edges.map((edge) => Number(edge.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
+    nextConditionId = Math.max(1, ...pipeline.nodes.flatMap((node) => node.conditions?.map((condition) => condition.id) ?? [])) + 1;
+    await nextTick();
+    scheduleRender();
+    scheduleExecute(true);
+    setNotice(`Загружено: ${pipeline.nodes.length} блоков, ${pipeline.edges.length} связей`);
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : "Не удалось загрузить файл");
+  } finally {
+    input.value = "";
+  }
+}
+
 function scheduleRender() {
   cancelAnimationFrame(renderFrame);
   renderFrame = requestAnimationFrame(async () => {
@@ -874,6 +1035,16 @@ async function executeGraph() {
 function handleKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
   const editing = target?.matches("input, textarea, select, [contenteditable='true']");
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    savePipelineFile();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
+    event.preventDefault();
+    openPipelineFile();
+    return;
+  }
   if (event.key === "Escape" && continuationFor.value) {
     event.preventDefault();
     closeContinuation();
@@ -941,6 +1112,23 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="flow-top-actions">
+        <div class="file-actions" role="group" aria-label="Файл схемы">
+          <button type="button" title="Открыть схему (Ctrl/⌘ O)" @click="openPipelineFile">
+            <span>↑</span><span class="file-label">Открыть</span>
+          </button>
+          <button type="button" title="Сохранить схему (Ctrl/⌘ S)" @click="savePipelineFile">
+            <span>↓</span><span class="file-label">Сохранить</span>
+          </button>
+          <input
+            ref="pipelineFileInput"
+            class="file-input"
+            type="file"
+            accept="application/json,.json"
+            tabindex="-1"
+            aria-hidden="true"
+            @change="loadPipelineFile"
+          />
+        </div>
         <span class="runtime-pill" :class="gpuMode">
           <i></i>{{ gpuMode === "webgpu" ? "WebGPU" : gpuMode === "canvas" ? "Canvas fallback" : "GPU…" }}
         </span>
