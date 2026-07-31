@@ -9,6 +9,30 @@ import {
   watch,
 } from "vue";
 import { JsonEngineClient } from "./engine/client";
+import FilterExpressionEditor from "./components/FilterExpressionEditor.vue";
+import JsonCodeEditor from "./components/JsonCodeEditor.vue";
+import {
+  BUILTIN_NODE_REGISTRY,
+  preflightConnection,
+  validateGraph,
+  type GraphDocument,
+  type GraphNode,
+} from "./graph-v2";
+import {
+  buildExecutionPlanRequest,
+  type ExecutePlanNodeResult,
+  type ExecutePlanResponse,
+} from "./runtime/execute-plan.ts";
+import { inputFieldsForNode, outputFieldsForNode } from "./runtime/schema-state.ts";
+import {
+  createUiFilterGroup,
+  filterExpressionToUi,
+  legacyConditionsToUiExpression,
+  type UiFilterExpression,
+} from "./runtime/filter-ui.ts";
+import { normalizeFilterExpression } from "./runtime/filter-expression.ts";
+import { PIPELINE_FORMAT, decodePipelineV2, encodePipelineV2, type PipelineFileV2 } from "./pipeline/model.ts";
+import { migratePipelineFile } from "./pipeline/migrate.ts";
 import type {
   AnalyzeResponse,
   AnalyzeSuccess,
@@ -17,6 +41,7 @@ import type {
   FilterOperator,
   OutputFormat,
   SourceFormat,
+  TimedResponse,
   TransformResponse,
   TransformSuccess,
 } from "./engine/types";
@@ -39,15 +64,23 @@ interface FlowNode {
   json?: string;
   sourceFormat?: SourceFormat;
   csvDelimiter?: string;
+  csvIncludeHeader?: boolean;
+  csvQuoteAll?: boolean;
   selectedPath?: string;
   selectedFields?: string[];
   conditions?: UiCondition[];
   filterMode?: FilterMode;
+  filterExpression?: UiFilterExpression;
   delimiter?: string;
   outputFormat?: OutputFormat;
+  xmlRoot?: string;
+  xmlRow?: string;
   tableName?: string;
   output?: string;
   stats?: TransformSuccess | null;
+  preview?: string;
+  previewStats?: TransformSuccess | null;
+  previewError?: string;
   error?: string;
 }
 
@@ -81,10 +114,7 @@ interface BlockDefinition {
   keywords: string;
 }
 
-interface PipelineFile {
-  format: "json-rivet-pipeline";
-  version: 1;
-  savedAt: string;
+interface LoadedPipeline {
   view: { panX: number; panY: number; zoom: number };
   nodes: FlowNode[];
   edges: FlowEdge[];
@@ -132,7 +162,8 @@ const LIBRARY_BLOCKS: BlockDefinition[] = [
   { key: "condition", kind: "condition", label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288", keywords: "условие фильтр отбор where" },
   { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35", keywords: "текст строка список через запятую" },
   { key: "json-output", kind: "output", outputFormat: "json", label: "JSON", eyebrow: "Выход", icon: "{ }", color: "#d06a35", keywords: "json результат экспорт выход" },
-  { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV", eyebrow: "Выход", icon: "CSV", color: "#d06a35", keywords: "csv таблица результат экспорт выход" },
+  { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV конвертер", eyebrow: "Конвертация", icon: "CSV", color: "#d06a35", keywords: "json в csv конвертация таблица результат экспорт выход" },
+  { key: "xml-output", kind: "output", outputFormat: "xml", label: "XML конвертер", eyebrow: "Конвертация", icon: "XML", color: "#b75a73", keywords: "json в xml конвертация разметка результат экспорт выход" },
   { key: "sql-output", kind: "output", outputFormat: "sql", label: "SQL INSERT", eyebrow: "Выход", icon: "SQL", color: "#d06a35", keywords: "sql insert база запрос результат экспорт" },
 ];
 
@@ -156,7 +187,7 @@ const nodes = ref<FlowNode[]>([
     id: "fields-1",
     kind: "fields",
     title: "Выбрать поля",
-    x: 480,
+    x: 865,
     y: 135,
     selectedPath: "/stores",
     selectedFields: ["name"],
@@ -165,10 +196,11 @@ const nodes = ref<FlowNode[]>([
     id: "condition-1",
     kind: "condition",
     title: "Только активные",
-    x: 865,
+    x: 480,
     y: 115,
     filterMode: "all",
     conditions: [{ id: 1, field: "state", operator: "equal", value: "1" }],
+    filterExpression: createUiFilterGroup("and", "state"),
   },
   {
     id: "output-1",
@@ -177,7 +209,12 @@ const nodes = ref<FlowNode[]>([
     x: 1280,
     y: 180,
     delimiter: ", ",
+    csvDelimiter: ",",
+    csvIncludeHeader: true,
+    csvQuoteAll: false,
     outputFormat: "flat",
+    xmlRoot: "rows",
+    xmlRow: "row",
     tableName: "stores",
     output: "",
     stats: null,
@@ -185,12 +222,14 @@ const nodes = ref<FlowNode[]>([
 ]);
 
 const edges = ref<FlowEdge[]>([
-  { id: "edge-1", from: "source-1", to: "fields-1" },
-  { id: "edge-2", from: "fields-1", to: "condition-1" },
-  { id: "edge-3", from: "condition-1", to: "output-1" },
+  { id: "edge-1", from: "source-1", to: "condition-1" },
+  { id: "edge-2", from: "condition-1", to: "fields-1" },
+  { id: "edge-3", from: "fields-1", to: "output-1" },
 ]);
 
 const analyses = reactive<Record<string, AnalyzeSuccess | undefined>>({});
+const executionResults = reactive<Record<string, ExecutePlanNodeResult | undefined>>({});
+const executionResponse = ref<ExecutePlanResponse | null>(null);
 const board = ref<HTMLElement | null>(null);
 const surface = ref<HTMLCanvasElement | null>(null);
 const panX = ref(0);
@@ -208,7 +247,6 @@ const cachedBranches = ref(0);
 const notice = ref("Перетащите блок или соедините точки");
 const continuationFor = ref("");
 const continuationQuery = ref("");
-const continuationSearchInput = ref<HTMLInputElement | null>(null);
 const pipelineFileInput = ref<HTMLInputElement | null>(null);
 const theme = ref<Theme>("light");
 
@@ -225,6 +263,7 @@ let noticeTimer: number | undefined;
 let connectionDrag: { fromId: string; startX: number; startY: number; moved: boolean } | null = null;
 const analysisCache = new Map<string, CacheEntry<AnalyzeResponse>>();
 const outputCache = new Map<string, CacheEntry<TransformResponse>>();
+const previewCache = new Map<string, CacheEntry<TransformResponse>>();
 
 type Gesture =
   | { type: "pan"; startX: number; startY: number; originX: number; originY: number }
@@ -242,12 +281,17 @@ const executionSignature = computed(() =>
       json: node.json,
       sourceFormat: node.sourceFormat,
       csvDelimiter: node.csvDelimiter,
+      csvIncludeHeader: node.csvIncludeHeader,
+      csvQuoteAll: node.csvQuoteAll,
       selectedPath: node.selectedPath,
       selectedFields: node.selectedFields,
       conditions: node.conditions,
       filterMode: node.filterMode,
+      filterExpression: node.filterExpression,
       delimiter: node.delimiter,
       outputFormat: node.outputFormat,
+      xmlRoot: node.xmlRoot,
+      xmlRow: node.xmlRow,
       tableName: node.tableName,
     })),
   }),
@@ -268,7 +312,7 @@ function applyTheme(nextTheme: Theme) {
   document.documentElement.style.colorScheme = nextTheme;
   document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
     ?.setAttribute("content", nextTheme === "dark" ? "#0e1114" : "#f3f4ef");
-  localStorage.setItem("json-rivet-theme", nextTheme);
+  localStorage.setItem("peregon-theme", nextTheme);
   scheduleRender();
 }
 
@@ -289,6 +333,40 @@ function nodeDisplayMeta(node: FlowNode) {
 
 function nodeById(id: string) {
   return nodes.value.find((node) => node.id === id);
+}
+
+function graphV2Type(node: FlowNode): string {
+  if (node.kind === "source") return `source.${node.sourceFormat ?? "json"}`;
+  if (node.kind === "fields") return "transform.project";
+  if (node.kind === "condition") return "transform.filter";
+  return `sink.${node.outputFormat ?? "flat"}`;
+}
+
+function graphV2OutputPort(node: FlowNode): string {
+  return node.kind === "source" ? "records" : "matched";
+}
+
+function toGraphV2(graphNodes = nodes.value, graphEdges = edges.value): GraphDocument {
+  return {
+    version: 2,
+    id: "current-pipeline",
+    revision: 1,
+    nodes: graphNodes.map((node): GraphNode => ({
+      id: node.id,
+      type: graphV2Type(node),
+      version: 1,
+      position: { x: node.x, y: node.y },
+      config: {},
+    })),
+    connections: graphEdges.map((edge) => {
+      const source = graphNodes.find((node) => node.id === edge.from);
+      return {
+        id: edge.id,
+        from: { nodeId: edge.from, port: source ? graphV2OutputPort(source) : "records" },
+        to: { nodeId: edge.to, port: "records" },
+      };
+    }),
+  };
 }
 
 function incomingEdges(nodeId: string) {
@@ -325,6 +403,8 @@ function arraysForNode(nodeId: string) {
 }
 
 function fieldsForNode(node: FlowNode) {
+  const runtimeFields = executionResults[node.id]?.input_schema?.fields;
+  if (runtimeFields) return runtimeFields;
   const analysis = analysisForNode(node.id);
   const arrays = analysis?.array_paths ?? [];
   const selected = arrays.find((candidate) => candidate.path === node.selectedPath) ?? arrays[0];
@@ -332,10 +412,33 @@ function fieldsForNode(node: FlowNode) {
 }
 
 function availableConditionFields(nodeId: string) {
+  const runtimeFields = executionResults[nodeId]?.input_schema?.fields;
+  if (runtimeFields) return runtimeFields;
   const ancestor = collectAncestors(nodeId).find((node) => node.kind === "fields");
   if (ancestor) return fieldsForNode(ancestor);
   const analysis = analysisForNode(nodeId);
   return analysis?.array_paths[0]?.fields ?? [];
+}
+
+function fieldCount(count: number) {
+  const word = count % 10 === 1 && count % 100 !== 11
+    ? "поле"
+    : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
+      ? "поля"
+      : "полей";
+  return `${count} ${word}`;
+}
+
+function nodeSchemaText(node: FlowNode) {
+  if (!executionResponse.value) return "";
+  const input = inputFieldsForNode(executionResponse.value, node.id);
+  const output = outputFieldsForNode(executionResponse.value, node.id);
+  if (!input.length && !output.length) return "";
+  if (node.kind === "source") return `Выход: ${fieldCount(output.length)}`;
+  if (node.kind === "output") return `Вход: ${fieldCount(input.length)}`;
+  if (!input.length) return `Выход: ${fieldCount(output.length)}`;
+  if (!output.length) return `Вход: ${fieldCount(input.length)}`;
+  return `Вход: ${input.length} → выход: ${fieldCount(output.length)}`;
 }
 
 function requiresValue(operator: FilterOperator) {
@@ -344,9 +447,9 @@ function requiresValue(operator: FilterOperator) {
 
 function compatibleBlocks(node: FlowNode) {
   const allowedKeys = node.kind === "source"
-    ? ["fields"]
+    ? ["fields", "flat", "json-output", "csv-output", "xml-output", "sql-output"]
     : node.kind === "fields" || node.kind === "condition"
-      ? ["condition", "flat", "json-output", "csv-output", "sql-output"]
+      ? ["condition", "flat", "json-output", "csv-output", "xml-output", "sql-output"]
       : [];
   return LIBRARY_BLOCKS.filter((block) => allowedKeys.includes(block.key));
 }
@@ -373,7 +476,9 @@ async function toggleContinuation(nodeId: string) {
   continuationFor.value = nodeId;
   continuationQuery.value = "";
   await nextTick();
-  continuationSearchInput.value?.focus();
+  board.value
+    ?.querySelector<HTMLInputElement>(`[data-node-id="${CSS.escape(nodeId)}"] .continuation-search input`)
+    ?.focus();
 }
 
 function closeContinuation() {
@@ -422,11 +527,16 @@ function addNode(
   if (kind === "condition") {
     base.filterMode = "all";
     base.conditions = [{ id: nextConditionId++, field: "state", operator: "equal", value: "1" }];
+    base.filterExpression = createUiFilterGroup("and", "state");
   }
   if (kind === "output") {
     base.delimiter = ", ";
     base.csvDelimiter = ",";
+    base.csvIncludeHeader = true;
+    base.csvQuoteAll = false;
     base.outputFormat = outputFormat;
+    base.xmlRoot = "rows";
+    base.xmlRow = "row";
     base.tableName = "result";
     base.output = "";
     base.stats = null;
@@ -486,15 +596,25 @@ function handlePort(nodeId: string, direction: PortDirection) {
 }
 
 function connectNodes(fromId: string, toId: string) {
-  if (fromId === toId) {
-    setNotice("Нельзя соединить блок с самим собой");
+  const source = nodeById(fromId);
+  const target = nodeById(toId);
+  if (!source || !target || source.kind === "output" || target.kind === "source") {
+    setNotice("Эти блоки нельзя соединить");
     return;
   }
-  const exists = edges.value.some((edge) => edge.from === fromId && edge.to === toId);
-  if (!exists) {
-    edges.value.push({ id: `edge-${nextEdgeId++}`, from: fromId, to: toId });
-    setNotice("Блоки соединены — ветвление поддерживается");
+  const candidateId = `edge-${nextEdgeId}`;
+  const preflight = preflightConnection(toGraphV2(), BUILTIN_NODE_REGISTRY, {
+    id: candidateId,
+    from: { nodeId: fromId, port: graphV2OutputPort(source) },
+    to: { nodeId: toId, port: "records" },
+  });
+  if (!preflight.ok) {
+    setNotice(preflight.issues[0]?.message ?? "Соединение несовместимо");
+    return;
   }
+  nextEdgeId += 1;
+  edges.value.push({ id: candidateId, from: fromId, to: toId });
+  setNotice("Блоки соединены — ветвление поддерживается");
 }
 
 function startConnectionDrag(event: PointerEvent, nodeId: string) {
@@ -678,22 +798,76 @@ function resetGraph() {
   window.location.reload();
 }
 
-function savePipelineFile() {
-  const cleanNodes = nodes.value.map(({ output: _output, stats: _stats, error: _error, ...node }) => node);
-  const pipeline: PipelineFile = {
-    format: "json-rivet-pipeline",
-    version: 1,
-    savedAt: new Date().toISOString(),
-    view: { panX: panX.value, panY: panY.value, zoom: zoom.value },
-    nodes: cleanNodes,
-    edges: edges.value,
+function pipelineNodeConfig(node: FlowNode): Record<string, import("./graph-v2").JsonValue> {
+  if (node.kind === "source") {
+    const downstreamFields = nodes.value.find(
+      (candidate) => candidate.kind === "fields"
+        && collectAncestors(candidate.id).some((ancestor) => ancestor.id === node.id),
+    );
+    return {
+      title: node.title,
+      text: node.json ?? "",
+      arrayPath: downstreamFields?.selectedPath ?? node.selectedPath ?? "",
+      ...(node.sourceFormat === "csv"
+        ? { delimiter: node.csvDelimiter ?? ",", includeHeader: true }
+        : {}),
+    };
+  }
+  if (node.kind === "fields") {
+    return { title: node.title, fields: node.selectedFields ?? [] };
+  }
+  if (node.kind === "condition") {
+    const expression = node.filterExpression ? normalizeFilterExpression(node.filterExpression) : null;
+    return {
+      title: node.title,
+      ...(expression ? { expression } : {}),
+    } as unknown as Record<string, import("./graph-v2").JsonValue>;
+  }
+  return {
+    title: node.title,
+    format: node.outputFormat ?? "flat",
+    delimiter: node.delimiter ?? ", ",
+    skipEmpty: true,
+    unique: false,
+    csvDelimiter: node.csvDelimiter ?? ",",
+    csvIncludeHeader: node.csvIncludeHeader !== false,
+    csvQuoteAll: node.csvQuoteAll === true,
+    xmlRoot: node.xmlRoot ?? "rows",
+    xmlRow: node.xmlRow ?? "row",
+    tableName: node.tableName ?? "result",
   };
-  const blob = new Blob([JSON.stringify(pipeline, null, 2)], { type: "application/json" });
+}
+
+function createPipelineV2(): PipelineFileV2 {
+  const graph = toGraphV2();
+  return {
+    format: PIPELINE_FORMAT,
+    version: 2,
+    savedAt: new Date().toISOString(),
+    metadata: { name: "Обработка магазинов" },
+    view: {
+      x: panX.value,
+      y: panY.value,
+      zoom: zoom.value,
+      ...(selectedNodeId.value ? { selectedNodeIds: [selectedNodeId.value] } : {}),
+    },
+    graph: {
+      ...graph,
+      nodes: graph.nodes.map((graphNode) => {
+        const node = nodeById(graphNode.id);
+        return { ...graphNode, config: node ? pipelineNodeConfig(node) : {} };
+      }),
+    },
+  };
+}
+
+function savePipelineFile() {
+  const blob = new Blob([encodePipelineV2(createPipelineV2(), { pretty: true })], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   const stamp = new Date().toISOString().slice(0, 19).replaceAll(":", "-");
   link.href = url;
-  link.download = `json-rivet-${stamp}.json`;
+  link.download = `peregon-${stamp}.json`;
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
   setNotice("Схема сохранена в файл");
@@ -705,94 +879,84 @@ function openPipelineFile() {
   pipelineFileInput.value.click();
 }
 
-function parsePipelineFile(value: unknown): PipelineFile {
-  if (!value || typeof value !== "object") throw new Error("Файл не содержит схему");
-  const raw = value as Record<string, unknown>;
-  if (raw.format !== "json-rivet-pipeline" || raw.version !== 1) {
-    throw new Error("Неподдерживаемый формат файла");
-  }
-  if (!Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) throw new Error("В файле нет блоков или связей");
-  if (raw.nodes.length > 500 || raw.edges.length > 2000) throw new Error("Схема слишком большая");
-
-  const operatorNames = new Set(FILTER_OPERATORS.map((operator) => operator.value));
-  const ids = new Set<string>();
-  const importedNodes: FlowNode[] = raw.nodes.map((candidate, index) => {
-    if (!candidate || typeof candidate !== "object") throw new Error(`Некорректный блок ${index + 1}`);
-    const node = candidate as Record<string, unknown>;
-    const id = typeof node.id === "string" ? node.id.slice(0, 120) : "";
-    const kind = node.kind;
-    if (!id || ids.has(id) || !["source", "fields", "condition", "output"].includes(String(kind))) {
-      throw new Error(`Некорректный блок ${index + 1}`);
+function sourcePathForGraphNode(pipeline: PipelineFileV2, nodeId: string) {
+  const visited = new Set<string>();
+  let current = nodeId;
+  while (!visited.has(current)) {
+    visited.add(current);
+    const incoming = pipeline.graph.connections.find((connection) => connection.to.nodeId === current);
+    if (!incoming) return "";
+    const parent = pipeline.graph.nodes.find((node) => node.id === incoming.from.nodeId);
+    if (!parent) return "";
+    if (parent.type.startsWith("source.")) {
+      return typeof parent.config.arrayPath === "string" ? parent.config.arrayPath : "";
     }
-    ids.add(id);
+    current = parent.id;
+  }
+  return "";
+}
+
+function parsePipelineFile(value: unknown): LoadedPipeline {
+  const rawVersion = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).version
+    : undefined;
+  const pipeline = migratePipelineFile(rawVersion === 2 ? decodePipelineV2(value) : value);
+  const importedNodes: FlowNode[] = pipeline.graph.nodes.map((graphNode): FlowNode => {
+    const config = graphNode.config;
+    const kind: NodeKind = graphNode.type.startsWith("source.")
+      ? "source"
+      : graphNode.type === "transform.project"
+        ? "fields"
+        : graphNode.type === "transform.filter"
+          ? "condition"
+          : "output";
     const imported: FlowNode = {
-      id,
-      kind: kind as NodeKind,
-      title: typeof node.title === "string" ? node.title.slice(0, 120) : `Блок ${index + 1}`,
-      x: typeof node.x === "number" && Number.isFinite(node.x) ? node.x : index * 390,
-      y: typeof node.y === "number" && Number.isFinite(node.y) ? node.y : 100,
+      id: graphNode.id,
+      kind,
+      title: typeof config.title === "string" ? config.title : graphNode.type,
+      x: graphNode.position.x,
+      y: graphNode.position.y,
     };
-    if (imported.kind === "source") {
-      imported.sourceFormat = node.sourceFormat === "csv" ? "csv" : "json";
-      imported.csvDelimiter = typeof node.csvDelimiter === "string" ? node.csvDelimiter.slice(0, 1) || "," : ",";
-      imported.json = typeof node.json === "string" ? node.json : "";
-    } else if (imported.kind === "fields") {
-      imported.selectedPath = typeof node.selectedPath === "string" ? node.selectedPath : "";
-      imported.selectedFields = Array.isArray(node.selectedFields)
-        ? node.selectedFields.filter((field): field is string => typeof field === "string").slice(0, 200)
+    if (kind === "source") {
+      imported.sourceFormat = graphNode.type === "source.csv" ? "csv" : "json";
+      imported.json = typeof config.text === "string" ? config.text : "";
+      imported.csvDelimiter = typeof config.delimiter === "string" ? config.delimiter : ",";
+      imported.selectedPath = typeof config.arrayPath === "string" ? config.arrayPath : "";
+    } else if (kind === "fields") {
+      imported.selectedFields = Array.isArray(config.fields)
+        ? config.fields.filter((field): field is string => typeof field === "string")
         : [];
-    } else if (imported.kind === "condition") {
-      imported.filterMode = node.filterMode === "any" ? "any" : "all";
-      imported.conditions = Array.isArray(node.conditions)
-        ? node.conditions.slice(0, 100).flatMap((item, conditionIndex) => {
-            if (!item || typeof item !== "object") return [];
-            const condition = item as Record<string, unknown>;
-            if (typeof condition.field !== "string" || !operatorNames.has(condition.operator as FilterOperator)) return [];
-            return [{
-              id: typeof condition.id === "number" && Number.isFinite(condition.id) ? condition.id : conditionIndex + 1,
-              field: condition.field.slice(0, 200),
-              operator: condition.operator as FilterOperator,
-              value: typeof condition.value === "string" ? condition.value.slice(0, 10000) : "",
-            }];
-          })
-        : [];
+      imported.selectedPath = sourcePathForGraphNode(pipeline, graphNode.id);
+    } else if (kind === "condition") {
+      const expression = normalizeFilterExpression(config.expression);
+      imported.filterExpression = expression ? filterExpressionToUi(expression) : undefined;
+      imported.filterMode = "all";
+      imported.conditions = [];
     } else {
-      imported.outputFormat = ["flat", "json", "csv", "sql"].includes(String(node.outputFormat))
-        ? node.outputFormat as OutputFormat
+      const format = graphNode.type.slice("sink.".length);
+      imported.outputFormat = ["flat", "json", "csv", "xml", "sql"].includes(format)
+        ? format as OutputFormat
         : "flat";
-      imported.delimiter = typeof node.delimiter === "string" ? node.delimiter.slice(0, 12) : ", ";
-      imported.csvDelimiter = typeof node.csvDelimiter === "string" ? node.csvDelimiter.slice(0, 1) || "," : ",";
-      imported.tableName = typeof node.tableName === "string" ? node.tableName.slice(0, 64) : "result";
+      imported.delimiter = typeof config.delimiter === "string" ? config.delimiter : ", ";
+      imported.csvDelimiter = typeof config.csvDelimiter === "string" ? config.csvDelimiter : ",";
+      imported.csvIncludeHeader = config.csvIncludeHeader !== false;
+      imported.csvQuoteAll = config.csvQuoteAll === true;
+      imported.xmlRoot = typeof config.xmlRoot === "string" ? config.xmlRoot : "rows";
+      imported.xmlRow = typeof config.xmlRow === "string" ? config.xmlRow : "row";
+      imported.tableName = typeof config.tableName === "string" ? config.tableName : "result";
       imported.output = "";
       imported.stats = null;
     }
     return imported;
   });
-
-  const edgeIds = new Set<string>();
-  const importedEdges: FlowEdge[] = raw.edges.flatMap((candidate, index) => {
-    if (!candidate || typeof candidate !== "object") return [];
-    const edge = candidate as Record<string, unknown>;
-    const from = typeof edge.from === "string" ? edge.from : "";
-    const to = typeof edge.to === "string" ? edge.to : "";
-    if (!ids.has(from) || !ids.has(to) || from === to) return [];
-    const id = typeof edge.id === "string" && edge.id && !edgeIds.has(edge.id) ? edge.id.slice(0, 120) : `edge-${index + 1}`;
-    if (edgeIds.has(id)) return [];
-    edgeIds.add(id);
-    return [{ id, from, to }];
-  });
-  const view = raw.view && typeof raw.view === "object" ? raw.view as Record<string, unknown> : {};
   return {
-    format: "json-rivet-pipeline",
-    version: 1,
-    savedAt: typeof raw.savedAt === "string" ? raw.savedAt : "",
-    view: {
-      panX: typeof view.panX === "number" && Number.isFinite(view.panX) ? view.panX : 0,
-      panY: typeof view.panY === "number" && Number.isFinite(view.panY) ? view.panY : 0,
-      zoom: typeof view.zoom === "number" && Number.isFinite(view.zoom) ? Math.min(1.65, Math.max(0.42, view.zoom)) : 0.8,
-    },
+    view: { panX: pipeline.view.x, panY: pipeline.view.y, zoom: pipeline.view.zoom },
     nodes: importedNodes,
-    edges: importedEdges,
+    edges: pipeline.graph.connections.map((connection) => ({
+      id: connection.id,
+      from: connection.from.nodeId,
+      to: connection.to.nodeId,
+    })),
   };
 }
 
@@ -924,6 +1088,62 @@ function applyOutputResult(outputNode: FlowNode, response: TransformResponse) {
   outputNode.stats = response;
 }
 
+function applyPreviewResult(node: FlowNode, response: TransformResponse) {
+  node.previewError = "";
+  if (!response.ok) {
+    node.preview = "";
+    node.previewStats = null;
+    node.previewError = response.error.message;
+    return;
+  }
+  node.preview = response.output;
+  node.previewStats = response;
+}
+
+function planStats(result: ExecutePlanNodeResult): TransformSuccess {
+  return {
+    ok: true,
+    output: "",
+    source_items: result.stats.input_items,
+    object_items: result.stats.input_items,
+    matched_items: result.stats.output_items,
+    filtered_out: result.stats.filtered_out,
+    skipped_items: result.stats.skipped_items,
+    empty_values: result.stats.empty_values ?? 0,
+    values: result.stats.values ?? result.stats.output_items,
+  };
+}
+
+function applyPlanNodeResult(node: FlowNode, result: ExecutePlanNodeResult | undefined, sinkOutput?: string) {
+  const message = result?.diagnostics[0]?.message ?? "Блок не был выполнен";
+  if (!result?.ok) {
+    if (node.kind === "output") {
+      node.output = "";
+      node.stats = null;
+      node.error = message;
+    } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source") {
+      node.preview = "";
+      node.previewStats = null;
+      node.previewError = message;
+    } else {
+      node.error = message;
+    }
+    return;
+  }
+
+  if (node.kind === "output") {
+    node.output = sinkOutput ?? "";
+    node.stats = planStats(result);
+    node.error = "";
+  } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source") {
+    node.preview = JSON.stringify(result.preview, null, 2);
+    node.previewStats = planStats(result);
+    node.previewError = "";
+  } else {
+    node.error = "";
+  }
+}
+
 async function executeGraph() {
   if (!client) return;
   const token = ++executionToken;
@@ -978,65 +1198,51 @@ async function executeGraph() {
       }
     }
 
-    const outputs = nodes.value.filter((node) => node.kind === "output");
-    await Promise.all(
-      outputs.map(async (outputNode) => {
-        outputNode.error = "";
-        const ancestors = collectAncestors(outputNode.id);
-        const sourceNode = ancestors.find((node) => node.kind === "source");
-        const fieldNode = ancestors.find((node) => node.kind === "fields");
-        const conditionNodes = ancestors.filter((node) => node.kind === "condition");
-        if (!sourceNode || !fieldNode) {
-          outputCache.delete(outputNode.id);
-          outputNode.output = "";
-          outputNode.stats = null;
-          outputNode.error = "Соедините источник данных и блок полей";
-          return;
-        }
-        const selectedFields = fieldNode.selectedFields ?? [];
-        if (!selectedFields.length) {
-          outputCache.delete(outputNode.id);
-          outputNode.output = "";
-          outputNode.stats = null;
-          outputNode.error = "В блоке полей ничего не выбрано";
-          return;
-        }
-        const filters = conditionNodes.flatMap((node) => node.conditions ?? []);
-        const request = {
-          action: "transform",
-          json: sourceNode.json ?? "",
-          path: fieldNode.selectedPath ?? "",
-          fields: selectedFields,
-          delimiter: outputNode.delimiter ?? ", ",
-          skip_empty: true,
-          unique: false,
-          filters: filters.map(({ field, operator, value }) => ({ field, operator, value })),
-          filter_mode: conditionNodes[0]?.filterMode ?? "all",
-          source_format: sourceNode.sourceFormat ?? "json",
-          csv_delimiter: sourceNode.csvDelimiter ?? ",",
-          output_format: outputNode.outputFormat ?? "flat",
-          output_csv_delimiter: outputNode.csvDelimiter ?? ",",
-          table_name: outputNode.tableName ?? "result",
-        } as const;
-        const signature = JSON.stringify(request);
-        const cached = outputCache.get(outputNode.id);
-        if (cached?.signature === signature) {
-          cachedBranches.value += 1;
-          engineVersion.value = cached.engineVersion;
-          applyOutputResult(outputNode, cached.response);
-          return;
-        }
-        const reply = await client!.request<TransformResponse>(request);
-        if (token !== executionToken) return;
-        outputCache.set(outputNode.id, {
-          signature,
-          response: reply.response,
-          engineVersion: reply.engineVersion,
-        });
-        engineVersion.value = reply.engineVersion;
-        applyOutputResult(outputNode, reply.response);
-      }),
+    const connectedIds = new Set(edges.value.flatMap((edge) => [edge.from, edge.to]));
+    const activeNodes = nodes.value.filter((node) => connectedIds.has(node.id));
+    const activeEdges = edges.value.filter(
+      (edge) => connectedIds.has(edge.from) && connectedIds.has(edge.to),
     );
+    for (const node of nodes.value) {
+      if (connectedIds.has(node.id) || node.kind === "source") continue;
+      if (node.kind === "output") {
+        node.output = "";
+        node.stats = null;
+        node.error = "Соедините источник данных";
+      } else if (node.kind === "fields" || node.kind === "condition") {
+        node.preview = "";
+        node.previewStats = null;
+        node.previewError = "Подключите источник данных";
+      }
+    }
+    if (!activeNodes.length) return;
+
+    const legacyNodes = activeNodes.map((node) => {
+      if (node.kind !== "source") return node;
+      const downstreamFields = nodes.value.find(
+        (candidate) => candidate.kind === "fields"
+          && collectAncestors(candidate.id).some((ancestor) => ancestor.id === node.id),
+      );
+      const fallbackPath = analyses[node.id]?.array_paths[0]?.path ?? "";
+      return { ...node, selectedPath: downstreamFields?.selectedPath ?? fallbackPath };
+    });
+    const request = buildExecutionPlanRequest(toGraphV2(activeNodes, activeEdges), {
+      legacyNodes,
+      previewLimit: 50,
+    });
+    const reply = await client.request<ExecutePlanResponse>(request);
+    if (token !== executionToken) return;
+    engineVersion.value = reply.engineVersion;
+    executionResponse.value = reply.response;
+    cachedBranches.value = activeNodes.reduce(
+      (count, node) => count + (reply.response.nodes[node.id]?.cached ? 1 : 0),
+      0,
+    );
+    for (const node of activeNodes) {
+      const result = reply.response.nodes[node.id];
+      executionResults[node.id] = result;
+      applyPlanNodeResult(node, result, reply.response.sink_outputs[node.id]);
+    }
   } catch (error) {
     setNotice(error instanceof Error ? error.message : "Не удалось выполнить граф");
   } finally {
@@ -1082,7 +1288,7 @@ watch(geometrySignature, scheduleRender);
 watch(executionSignature, () => scheduleExecute());
 
 onMounted(async () => {
-  const savedTheme = localStorage.getItem("json-rivet-theme");
+  const savedTheme = localStorage.getItem("peregon-theme");
   applyTheme(savedTheme === "light" || savedTheme === "dark"
     ? savedTheme
     : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
@@ -1118,9 +1324,9 @@ onBeforeUnmount(() => {
   <div class="flow-app">
     <header class="flow-topbar">
       <div class="flow-brand">
-        <span class="flow-brand-mark">JR</span>
+        <span class="flow-brand-mark">P</span>
         <span>
-          <strong>JSON RIVET</strong>
+          <strong>PEREGON</strong>
           <small>Visual pipeline</small>
         </span>
       </div>
@@ -1234,6 +1440,7 @@ onBeforeUnmount(() => {
         <article
           v-for="node in nodes"
           :key="node.id"
+          :data-node-id="node.id"
           class="flow-node"
           :class="[`node-${node.kind}`, { selected: selectedNodeId === node.id, 'continuation-open': continuationFor === node.id }]"
           :style="{
@@ -1269,6 +1476,11 @@ onBeforeUnmount(() => {
           </header>
 
           <div class="node-body" @pointerdown.stop>
+            <div v-if="nodeSchemaText(node)" class="node-schema-summary">
+              <span>Схема</span>
+              <code>{{ nodeSchemaText(node) }}</code>
+              <small v-if="executionResults[node.id]?.cached" class="node-cache-badge">кэш</small>
+            </div>
             <template v-if="node.kind === 'source'">
               <div class="source-format-row">
                 <span>Формат</span>
@@ -1283,7 +1495,13 @@ onBeforeUnmount(() => {
                 <small v-if="analyses[node.id]" class="node-ok">корректный</small>
                 <small v-else-if="node.error" class="node-bad">ошибка</small>
               </div>
+              <JsonCodeEditor
+                v-if="(node.sourceFormat ?? 'json') === 'json'"
+                v-model="node.json"
+                :label="`Исходные данные ${node.sourceFormat ?? 'json'}`"
+              />
               <textarea
+                v-else
                 v-model="node.json"
                 class="node-code-input"
                 spellcheck="false"
@@ -1294,6 +1512,18 @@ onBeforeUnmount(() => {
                 <span>{{ analyses[node.id]?.array_paths.length }} набор</span>
                 <span>{{ (node.json ?? '').length }} символов</span>
               </div>
+              <div class="node-label-row step-result-label">
+                <span>Результат</span>
+                <small v-if="node.previewStats" class="node-ok">{{ node.previewStats.matched_items }} строк</small>
+              </div>
+              <JsonCodeEditor
+                class="node-result-output node-step-preview"
+                :model-value="node.preview || (node.previewError ? '' : 'Результат появится здесь')"
+                :highlight-syntax="Boolean(node.preview)"
+                readonly
+                :label="`Результат блока ${node.title}`"
+              />
+              <p v-if="node.previewError" class="node-error">{{ node.previewError }}</p>
             </template>
 
             <template v-else-if="node.kind === 'fields'">
@@ -1325,60 +1555,47 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <div v-else class="node-empty">Подключите источник данных</div>
+              <div class="node-label-row step-result-label">
+                <span>Результат</span>
+                <small v-if="node.previewStats" class="node-ok">{{ node.previewStats.matched_items }} строк</small>
+              </div>
+              <JsonCodeEditor
+                class="node-result-output node-step-preview"
+                :model-value="node.preview || (node.previewError ? '' : 'Результат появится здесь')"
+                :highlight-syntax="Boolean(node.preview)"
+                readonly
+                :label="`Результат блока ${node.title}`"
+              />
+              <p v-if="node.previewError" class="node-error">{{ node.previewError }}</p>
             </template>
 
             <template v-else-if="node.kind === 'condition'">
-              <div class="condition-mode" role="group" aria-label="Логика условий">
-                <button
-                  type="button"
-                  :class="{ active: node.filterMode === 'all' }"
-                  @click="node.filterMode = 'all'"
-                >Все <small>И</small></button>
-                <button
-                  type="button"
-                  :class="{ active: node.filterMode === 'any' }"
-                  @click="node.filterMode = 'any'"
-                >Любое <small>ИЛИ</small></button>
+              <FilterExpressionEditor
+                v-if="node.filterExpression"
+                v-model="node.filterExpression"
+                :fields="availableConditionFields(node.id)"
+                :operators="FILTER_OPERATORS"
+              />
+              <button
+                v-else
+                type="button"
+                class="add-subblock"
+                @click="node.filterExpression = createUiFilterGroup('and', availableConditionFields(node.id)[0]?.name ?? 'state')"
+              >+ Создать условие</button>
+              <div class="node-label-row step-result-label">
+                <span>Результат</span>
+                <small v-if="node.previewStats" class="node-ok">
+                  {{ node.previewStats.matched_items }} прошло · {{ node.previewStats.filtered_out }} отсеяно
+                </small>
               </div>
-              <div class="condition-subblocks">
-                <div
-                  v-for="(condition, index) in node.conditions"
-                  :key="condition.id"
-                  class="condition-subblock"
-                >
-                  <span class="subblock-index">{{ index + 1 }}</span>
-                  <select v-model="condition.field" aria-label="Поле условия">
-                    <option
-                      v-for="field in availableConditionFields(node.id)"
-                      :key="field.name"
-                      :value="field.name"
-                    >{{ field.name }}</option>
-                  </select>
-                  <select v-model="condition.operator" aria-label="Оператор условия">
-                    <option
-                      v-for="operator in FILTER_OPERATORS"
-                      :key="operator.value"
-                      :value="operator.value"
-                    >{{ operator.label }}</option>
-                  </select>
-                  <input
-                    v-if="requiresValue(condition.operator)"
-                    v-model="condition.value"
-                    aria-label="Значение условия"
-                    placeholder="значение"
-                  />
-                  <span v-else class="unary-value">без значения</span>
-                  <button
-                    type="button"
-                    class="subblock-delete"
-                    aria-label="Удалить условие"
-                    @click="removeCondition(node, condition.id)"
-                  >×</button>
-                </div>
-              </div>
-              <button type="button" class="add-subblock" @click="addCondition(node)">
-                <span>+</span> Подусловие
-              </button>
+              <JsonCodeEditor
+                class="node-result-output node-step-preview"
+                :model-value="node.preview || (node.previewError ? '' : 'Результат появится здесь')"
+                :highlight-syntax="Boolean(node.preview)"
+                readonly
+                :label="`Результат блока ${node.title}`"
+              />
+              <p v-if="node.previewError" class="node-error">{{ node.previewError }}</p>
             </template>
 
             <template v-else>
@@ -1388,6 +1605,7 @@ onBeforeUnmount(() => {
                   <option value="flat">Плоский список</option>
                   <option value="json">JSON</option>
                   <option value="csv">CSV</option>
+                  <option value="xml">XML</option>
                   <option value="sql">SQL INSERT</option>
                 </select>
               </label>
@@ -1395,19 +1613,48 @@ onBeforeUnmount(() => {
                 <span>Разделитель</span>
                 <input v-model="node.delimiter" maxlength="12" />
               </label>
-              <label v-else-if="node.outputFormat === 'csv'" class="node-control compact-control">
-                <span>Разделитель CSV</span>
-                <input v-model="node.csvDelimiter" maxlength="1" />
-              </label>
+              <div v-else-if="node.outputFormat === 'csv'" class="converter-settings">
+                <label class="node-control compact-control">
+                  <span>Разделитель CSV</span>
+                  <input v-model="node.csvDelimiter" maxlength="1" />
+                </label>
+                <label class="converter-option">
+                  <input v-model="node.csvIncludeHeader" type="checkbox" />
+                  <span>Добавлять строку заголовков</span>
+                </label>
+                <label class="converter-option">
+                  <input v-model="node.csvQuoteAll" type="checkbox" />
+                  <span>Все значения в кавычках</span>
+                </label>
+              </div>
               <label v-else-if="node.outputFormat === 'sql'" class="node-control compact-control table-control">
                 <span>Таблица</span>
                 <input v-model="node.tableName" maxlength="64" placeholder="stores" />
               </label>
+              <div v-else-if="node.outputFormat === 'xml'" class="xml-controls">
+                <label class="node-control compact-control table-control">
+                  <span>Корень</span>
+                  <input v-model="node.xmlRoot" maxlength="64" placeholder="rows" />
+                </label>
+                <label class="node-control compact-control table-control">
+                  <span>Строка</span>
+                  <input v-model="node.xmlRow" maxlength="64" placeholder="row" />
+                </label>
+              </div>
               <div class="node-label-row">
                 <span>Результат</span>
                 <small v-if="node.stats" class="node-ok">{{ node.stats.values }} значений</small>
               </div>
+              <JsonCodeEditor
+                v-if="node.outputFormat === 'json'"
+                class="node-result-output"
+                :model-value="node.output || (node.error ? '' : 'Результат появится здесь')"
+                :highlight-syntax="Boolean(node.output)"
+                readonly
+                label="Результат блока"
+              />
               <textarea
+                v-else
                 class="node-result-output"
                 :value="node.output || (node.error ? '' : 'Результат появится здесь')"
                 readonly
@@ -1445,6 +1692,7 @@ onBeforeUnmount(() => {
           <div
             v-if="continuationFor === node.id"
             class="continuation-popover"
+            :style="{ transform: `scale(${1 / zoom})` }"
             @pointerdown.stop
             @click.stop
           >
@@ -1455,7 +1703,6 @@ onBeforeUnmount(() => {
             <label class="continuation-search">
               <span>⌕</span>
               <input
-                ref="continuationSearchInput"
                 v-model="continuationQuery"
                 type="search"
                 placeholder="Например, SQL или фильтр"

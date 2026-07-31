@@ -22,7 +22,7 @@ const workerConfig = {
     ? [
         {
           binding: d1,
-          database_name: "json-rivet-d1",
+          database_name: "peregon-d1",
           database_id: PLACEHOLDER_DATABASE_ID,
         },
       ]
@@ -31,7 +31,7 @@ const workerConfig = {
     ? [
         {
           binding: r2,
-          bucket_name: "json-rivet-r2",
+          bucket_name: "peregon-r2",
         },
       ]
     : [],

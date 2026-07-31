@@ -2,7 +2,10 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use themoretheless_tokenizer::{tokenize_json, TokenKind};
 use wasm_bindgen::prelude::*;
+
+mod plan;
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +30,7 @@ enum OutputFormat {
     Flat,
     Json,
     Csv,
+    Xml,
     Sql,
 }
 
@@ -36,6 +40,18 @@ fn default_csv_delimiter() -> String {
 
 fn default_table_name() -> String {
     "result".to_owned()
+}
+
+fn default_xml_root() -> String {
+    "rows".to_owned()
+}
+
+fn default_xml_row() -> String {
+    "row".to_owned()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -65,6 +81,12 @@ struct FilterCondition {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum EngineRequest {
+    TokenizeJson {
+        source: String,
+    },
+    ExecutePlan {
+        plan: plan::ExecutionPlan,
+    },
     Analyze {
         json: String,
         #[serde(default)]
@@ -103,6 +125,14 @@ enum EngineRequest {
         output_format: OutputFormat,
         #[serde(default = "default_csv_delimiter")]
         output_csv_delimiter: String,
+        #[serde(default = "default_true")]
+        csv_include_header: bool,
+        #[serde(default)]
+        csv_quote_all: bool,
+        #[serde(default = "default_xml_root")]
+        xml_root: String,
+        #[serde(default = "default_xml_row")]
+        xml_row: String,
         #[serde(default = "default_table_name")]
         table_name: String,
     },
@@ -121,7 +151,7 @@ pub fn engine_version() -> String {
 }
 
 #[wasm_bindgen]
-pub fn process_json(request_json: &str) -> String {
+pub fn process_request(request_json: &str) -> String {
     let response = match serde_json::from_str::<EngineRequest>(request_json) {
         Ok(request) => handle_request(request),
         Err(error) => error_response(
@@ -138,6 +168,8 @@ pub fn process_json(request_json: &str) -> String {
 
 fn handle_request(request: EngineRequest) -> Value {
     match request {
+        EngineRequest::TokenizeJson { source } => tokenize_json_response(&source),
+        EngineRequest::ExecutePlan { plan } => plan::execute(plan),
         EngineRequest::Analyze {
             json,
             source_format,
@@ -171,6 +203,10 @@ fn handle_request(request: EngineRequest) -> Value {
             csv_delimiter,
             output_format,
             output_csv_delimiter,
+            csv_include_header,
+            csv_quote_all,
+            xml_root,
+            xml_row,
             table_name,
         } => transform(
             &json,
@@ -185,8 +221,73 @@ fn handle_request(request: EngineRequest) -> Value {
             &csv_delimiter,
             output_format,
             &output_csv_delimiter,
+            csv_include_header,
+            csv_quote_all,
+            &xml_root,
+            &xml_row,
             &table_name,
         ),
+    }
+}
+
+fn tokenize_json_response(source: &str) -> Value {
+    let tokenization = tokenize_json(source);
+    let mut byte_cursor = 0usize;
+    let mut utf16_cursor = 0usize;
+    let mut byte_to_utf16 = |target: usize| {
+        if target > byte_cursor {
+            utf16_cursor += source[byte_cursor..target].encode_utf16().count();
+            byte_cursor = target;
+        }
+        utf16_cursor
+    };
+
+    let tokens = tokenization
+        .tokens
+        .iter()
+        .map(|token| {
+            let from = byte_to_utf16(token.span.start);
+            let to = byte_to_utf16(token.span.end);
+            json!({
+                "kind": token_kind_name(token.kind),
+                "from": from,
+                "to": to,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Diagnostic spans are converted independently because they overlap tokens
+    // and therefore are not necessarily monotonic relative to the cursor above.
+    let diagnostics = tokenization
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "from": source[..diagnostic.span.start].encode_utf16().count(),
+                "to": source[..diagnostic.span.end].encode_utf16().count(),
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "ok": true,
+        "tokens": tokens,
+        "diagnostics": diagnostics,
+    })
+}
+
+const fn token_kind_name(kind: TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Property => "key",
+        TokenKind::String => "string",
+        TokenKind::Number => "number",
+        TokenKind::Boolean => "boolean",
+        TokenKind::Null => "null",
+        TokenKind::Punctuation => "punctuation",
+        TokenKind::Whitespace => "whitespace",
+        TokenKind::Invalid => "invalid",
     }
 }
 
@@ -489,6 +590,10 @@ fn transform(
     csv_delimiter: &str,
     output_format: OutputFormat,
     output_csv_delimiter: &str,
+    csv_include_header: bool,
+    csv_quote_all: bool,
+    xml_root: &str,
+    xml_row: &str,
     table_name: &str,
 ) -> Value {
     let value = match parse_input(input, source_format, csv_delimiter) {
@@ -551,6 +656,15 @@ fn transform(
             &matched_objects,
             fields,
             output_csv_delimiter,
+            csv_include_header,
+            csv_quote_all,
+            &mut empty_values,
+        ),
+        OutputFormat::Xml => format_xml(
+            &matched_objects,
+            fields,
+            xml_root,
+            xml_row,
             &mut empty_values,
         ),
         OutputFormat::Sql => format_sql(&matched_objects, fields, table_name, &mut empty_values),
@@ -639,14 +753,21 @@ fn format_csv(
     objects: &[&Map<String, Value>],
     fields: &[String],
     delimiter: &str,
+    include_header: bool,
+    quote_all: bool,
     empty_values: &mut usize,
 ) -> (String, usize) {
     let separator = delimiter.chars().next().unwrap_or(',').to_string();
-    let mut rows = vec![fields
-        .iter()
-        .map(|field| escape_value(field, &separator))
-        .collect::<Vec<_>>()
-        .join(&separator)];
+    let mut rows = Vec::new();
+    if include_header {
+        rows.push(
+            fields
+                .iter()
+                .map(|field| escape_csv_value(field, &separator, quote_all))
+                .collect::<Vec<_>>()
+                .join(&separator),
+        );
+    }
     for object in objects {
         let row = fields
             .iter()
@@ -655,13 +776,70 @@ fn format_csv(
                 if value.is_null() {
                     *empty_values += 1;
                 }
-                escape_value(&value_to_text(value), &separator)
+                escape_csv_value(&value_to_text(value), &separator, quote_all)
             })
             .collect::<Vec<_>>()
             .join(&separator);
         rows.push(row);
     }
     (rows.join("\n"), objects.len() * fields.len())
+}
+
+fn format_xml(
+    objects: &[&Map<String, Value>],
+    fields: &[String],
+    root_name: &str,
+    row_name: &str,
+    empty_values: &mut usize,
+) -> (String, usize) {
+    let root = xml_name(root_name, "rows");
+    let row = xml_name(row_name, "row");
+    let mut lines = vec![
+        r#"<?xml version="1.0" encoding="UTF-8"?>"#.to_owned(),
+        format!("<{root}>"),
+    ];
+    for object in objects {
+        lines.push(format!("  <{row}>"));
+        for field in fields {
+            let tag = xml_name(field, "field");
+            let value = object.get(field).unwrap_or(&Value::Null);
+            if value.is_null() {
+                *empty_values += 1;
+            }
+            lines.push(format!(
+                "    <{tag}>{}</{tag}>",
+                xml_escape(&value_to_text(value))
+            ));
+        }
+        lines.push(format!("  </{row}>"));
+    }
+    lines.push(format!("</{root}>"));
+    (lines.join("\n"), objects.len() * fields.len())
+}
+
+fn xml_name(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return fallback.to_owned();
+    }
+    let mut output = String::new();
+    for (index, character) in trimmed.chars().enumerate() {
+        let valid = character.is_alphanumeric() || matches!(character, '_' | '-' | '.');
+        if index == 0 && !(character.is_alphabetic() || character == '_') {
+            output.push('_');
+        }
+        output.push(if valid { character } else { '_' });
+    }
+    output
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn format_sql(
@@ -872,7 +1050,12 @@ fn value_to_text(value: &Value) -> String {
 }
 
 fn escape_value(value: &str, delimiter: &str) -> String {
-    let needs_quotes = value.contains('"')
+    escape_csv_value(value, delimiter, false)
+}
+
+fn escape_csv_value(value: &str, delimiter: &str, quote_all: bool) -> String {
+    let needs_quotes = quote_all
+        || value.contains('"')
         || value.contains('\n')
         || value.contains('\r')
         || (!delimiter.is_empty() && value.contains(delimiter));
@@ -918,7 +1101,22 @@ mod tests {
     }"#;
 
     fn request(value: Value) -> Value {
-        serde_json::from_str(&process_json(&value.to_string())).unwrap()
+        serde_json::from_str(&process_request(&value.to_string())).unwrap()
+    }
+
+    #[test]
+    fn exposes_rust_tokenizer_with_browser_utf16_offsets() {
+        let result = request(json!({
+            "action": "tokenize_json",
+            "source": "{\"emoji\":\"😀\"}"
+        }));
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["tokens"][1]["kind"], "key");
+        assert_eq!(result["tokens"][3]["kind"], "string");
+        assert_eq!(result["tokens"][3]["from"], 9);
+        assert_eq!(result["tokens"][3]["to"], 13);
+        assert_eq!(result["diagnostics"], json!([]));
     }
 
     #[test]
@@ -1283,6 +1481,19 @@ mod tests {
     }
 
     #[test]
+    fn configures_csv_header_and_quoting() {
+        let input = r#"[{"name":"Москва","state":1},{"name":"Белгород","state":0}]"#;
+        let result = request(json!({
+            "action": "transform", "json": input, "path": "", "fields": ["name", "state"],
+            "delimiter": ", ", "skip_empty": true, "unique": false,
+            "output_format": "csv", "output_csv_delimiter": ";",
+            "csv_include_header": false, "csv_quote_all": true,
+            "filters": [], "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "\"Москва\";\"1\"\n\"Белгород\";\"0\"");
+    }
+
+    #[test]
     fn exports_safe_sql_insert_statements() {
         let input = r#"[{"name":"O'Reilly","state":1},{"name":"Пусто","state":null}]"#;
         let result = request(json!({
@@ -1294,5 +1505,31 @@ mod tests {
             result["output"],
             "INSERT INTO \"stores\" (\"name\", \"state\") VALUES ('O''Reilly', 1);\nINSERT INTO \"stores\" (\"name\", \"state\") VALUES ('Пусто', NULL);"
         );
+    }
+
+    #[test]
+    fn exports_xml_with_safe_tags_and_escaped_values() {
+        let input =
+            r#"[{"store name":"A & B <Москва>","state":1},{"store name":"Белгород","state":null}]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["store name", "state"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "output_format": "xml",
+            "xml_root": "stores",
+            "xml_row": "store",
+            "filters": [],
+            "filter_mode": "all"
+        }));
+        let xml = result["output"].as_str().unwrap();
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<stores>"));
+        assert!(xml.contains("<store_name>A &amp; B &lt;Москва&gt;</store_name>"));
+        assert!(xml.contains("<state></state>"));
+        assert!(xml.ends_with("</stores>"));
+        assert_eq!(result["empty_values"], 1);
     }
 }

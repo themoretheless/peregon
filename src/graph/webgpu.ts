@@ -11,6 +11,7 @@ export interface SurfaceScene {
   panY: number;
   zoom: number;
   edges: SurfaceEdge[];
+  theme: "light" | "dark";
 }
 
 type GpuState = {
@@ -151,7 +152,9 @@ export class FlowSurfaceRenderer {
       colorAttachments: [
         {
           view: context.getCurrentTexture().createView(),
-          clearValue: { r: 0.956, g: 0.952, b: 0.929, a: 1 },
+          clearValue: scene.theme === "dark"
+            ? { r: 0.055, g: 0.067, b: 0.078, a: 1 }
+            : { r: 0.956, g: 0.952, b: 0.929, a: 1 },
           loadOp: "clear",
           storeOp: "store",
         },
@@ -195,11 +198,13 @@ export class FlowSurfaceRenderer {
     const startY = ((scene.panY % spacing) + spacing) % spacing;
     for (let x = startX, index = 0; x < width; x += spacing, index += 1) {
       const major = Math.round((x - scene.panX) / spacing) % 4 === 0;
-      addLine(x, 0, x, height, major ? [0.42, 0.43, 0.39, 0.16] : [0.42, 0.43, 0.39, 0.075]);
+      const grid: [number, number, number] = scene.theme === "dark" ? [0.55, 0.58, 0.63] : [0.42, 0.43, 0.39];
+      addLine(x, 0, x, height, [...grid, major ? 0.17 : 0.075]);
     }
     for (let y = startY, index = 0; y < height; y += spacing, index += 1) {
       const major = Math.round((y - scene.panY) / spacing) % 4 === 0;
-      addLine(0, y, width, y, major ? [0.42, 0.43, 0.39, 0.16] : [0.42, 0.43, 0.39, 0.075]);
+      const grid: [number, number, number] = scene.theme === "dark" ? [0.55, 0.58, 0.63] : [0.42, 0.43, 0.39];
+      addLine(0, y, width, y, [...grid, major ? 0.17 : 0.075]);
     }
 
     for (const edge of scene.edges) {
@@ -232,7 +237,7 @@ export class FlowSurfaceRenderer {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
-    context.fillStyle = "#f4f3ed";
+    context.fillStyle = scene.theme === "dark" ? "#0e1114" : "#f4f3ed";
     context.fillRect(0, 0, width, height);
 
     const spacing = 32 * scene.zoom;
@@ -240,14 +245,14 @@ export class FlowSurfaceRenderer {
     const startY = ((scene.panY % spacing) + spacing) % spacing;
     context.lineWidth = 1;
     for (let x = startX; x < width; x += spacing) {
-      context.strokeStyle = "rgba(86, 91, 84, .11)";
+      context.strokeStyle = scene.theme === "dark" ? "rgba(151, 158, 171, .11)" : "rgba(86, 91, 84, .11)";
       context.beginPath();
       context.moveTo(x, 0);
       context.lineTo(x, height);
       context.stroke();
     }
     for (let y = startY; y < height; y += spacing) {
-      context.strokeStyle = "rgba(86, 91, 84, .11)";
+      context.strokeStyle = scene.theme === "dark" ? "rgba(151, 158, 171, .11)" : "rgba(86, 91, 84, .11)";
       context.beginPath();
       context.moveTo(0, y);
       context.lineTo(width, y);

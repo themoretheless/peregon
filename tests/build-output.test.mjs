@@ -10,6 +10,6 @@ test("Sites build contains the Vue client and Worker entry", async () => {
   ]);
 
   const html = await readFile("dist/client/index.html", "utf8");
-  assert.match(html, /JSON Rivet/);
+  assert.match(html, /Peregon/);
   assert.match(html, /assets\//);
 });

@@ -10,9 +10,9 @@ interface WorkerFailure {
 }
 
 export class JsonEngineClient {
-  private readonly worker = new Worker(new URL("./json.worker.ts", import.meta.url), {
+  private readonly worker = new Worker(new URL("./peregon.worker.ts", import.meta.url), {
     type: "module",
-    name: "json-rivet-wasm",
+    name: "peregon-wasm",
   });
 
   private nextId = 1;

@@ -2,8 +2,8 @@
 
 import init, {
   engine_version,
-  process_json,
-} from "../generated/json_engine/json_engine.js";
+  process_request,
+} from "../generated/peregon_engine/peregon_engine.js";
 import type { EngineRequest } from "./types";
 
 interface IncomingMessage {
@@ -19,7 +19,7 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
 
   try {
     await wasmReady;
-    const response = JSON.parse(process_json(JSON.stringify(request)));
+    const response = JSON.parse(process_request(JSON.stringify(request)));
     self.postMessage({
       id,
       response,

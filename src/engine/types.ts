@@ -21,7 +21,7 @@ export interface ArrayInfo {
 
 export type FilterMode = "all" | "any";
 export type SourceFormat = "json" | "csv";
-export type OutputFormat = "flat" | "json" | "csv" | "sql";
+export type OutputFormat = "flat" | "json" | "csv" | "xml" | "sql";
 
 export type FilterOperator =
   | "equal"
@@ -42,7 +42,14 @@ export interface FilterCondition {
   value: string;
 }
 
+import type { ExecutePlanRequest } from "../runtime/execute-plan.ts";
+
 export type EngineRequest =
+  | ExecutePlanRequest
+  | {
+      action: "tokenize_json";
+      source: string;
+    }
   | {
       action: "analyze";
       json: string;
@@ -72,6 +79,10 @@ export type EngineRequest =
       csv_delimiter: string;
       output_format: OutputFormat;
       output_csv_delimiter: string;
+      csv_include_header: boolean;
+      csv_quote_all: boolean;
+      xml_root: string;
+      xml_row: string;
       table_name: string;
     };
 
@@ -81,6 +92,38 @@ export interface AnalyzeSuccess {
   root_type: string;
   array_paths: ArrayInfo[];
 }
+
+export type JsonSyntaxTokenKind =
+  | "key"
+  | "string"
+  | "number"
+  | "boolean"
+  | "null"
+  | "punctuation"
+  | "whitespace"
+  | "invalid";
+
+export interface JsonSyntaxToken {
+  kind: JsonSyntaxTokenKind;
+  /** UTF-16 offsets, matching textarea selection offsets. */
+  from: number;
+  to: number;
+}
+
+export interface JsonSyntaxDiagnostic {
+  from: number;
+  to: number;
+  code: string;
+  message: string;
+}
+
+export interface TokenizeJsonSuccess {
+  ok: true;
+  tokens: JsonSyntaxToken[];
+  diagnostics: JsonSyntaxDiagnostic[];
+}
+
+export type TokenizeJsonResponse = TokenizeJsonSuccess | EngineFailure;
 
 export interface TransformSuccess {
   ok: true;
