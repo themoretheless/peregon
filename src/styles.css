@@ -560,7 +560,7 @@ textarea:focus-visible {
 }
 
 .node-code-input,
-.node-output {
+.node-result-output {
   width: 100%;
   resize: none;
   border: 1px solid #242b2d;
@@ -579,7 +579,7 @@ textarea:focus-visible {
 }
 
 .node-code-input:focus,
-.node-output:focus {
+.node-result-output:focus {
   border-color: #7064df;
   box-shadow: 0 0 0 3px rgba(101, 87, 217, 0.13);
 }
@@ -836,7 +836,7 @@ textarea:focus-visible {
   margin-bottom: 8px;
 }
 
-.node-output {
+.node-result-output {
   height: 132px;
   padding: 11px;
   color: #e6e9e6;

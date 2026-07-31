@@ -856,7 +856,7 @@ onBeforeUnmount(() => {
                 <small v-if="node.stats" class="node-ok">{{ node.stats.values }} значений</small>
               </div>
               <textarea
-                class="node-output"
+                class="node-result-output"
                 :value="node.output || (node.error ? '' : 'Результат появится здесь')"
                 readonly
                 aria-label="Результат блока"
