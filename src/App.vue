@@ -24,6 +24,7 @@ import { FlowSurfaceRenderer, type SurfaceEdge } from "./graph/webgpu";
 
 type NodeKind = "source" | "fields" | "condition" | "output";
 type PortDirection = "input" | "output";
+type Theme = "light" | "dark";
 
 interface UiCondition extends FilterCondition {
   id: number;
@@ -204,11 +205,12 @@ const engineVersion = ref("");
 const isRunning = ref(false);
 const lastRunMs = ref(0);
 const cachedBranches = ref(0);
-const notice = ref("Перетащите блок или соедините порты");
+const notice = ref("Перетащите блок или соедините точки");
 const continuationFor = ref("");
 const continuationQuery = ref("");
 const continuationSearchInput = ref<HTMLInputElement | null>(null);
 const pipelineFileInput = ref<HTMLInputElement | null>(null);
+const theme = ref<Theme>("light");
 
 let client: JsonEngineClient | null = null;
 let renderer: FlowSurfaceRenderer | null = null;
@@ -259,6 +261,20 @@ const geometrySignature = computed(() =>
     edges: edges.value,
   }),
 );
+
+function applyTheme(nextTheme: Theme) {
+  theme.value = nextTheme;
+  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.style.colorScheme = nextTheme;
+  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute("content", nextTheme === "dark" ? "#0e1114" : "#f3f4ef");
+  localStorage.setItem("json-rivet-theme", nextTheme);
+  scheduleRender();
+}
+
+function toggleTheme() {
+  applyTheme(theme.value === "dark" ? "light" : "dark");
+}
 
 function nodeMeta(kind: NodeKind) {
   return NODE_META[kind];
@@ -369,7 +385,7 @@ function setNotice(message: string) {
   notice.value = message;
   window.clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => {
-    notice.value = "Перетащите блок или соедините порты";
+    notice.value = "Перетащите блок или соедините точки";
   }, 2600);
 }
 
@@ -878,7 +894,7 @@ function renderSurface() {
     }
   }
   edgeVisuals.value = visuals;
-  renderer.render({ panX: panX.value, panY: panY.value, zoom: zoom.value, edges: surfaceEdges });
+  renderer.render({ panX: panX.value, panY: panY.value, zoom: zoom.value, edges: surfaceEdges, theme: theme.value });
 }
 
 function scheduleExecute(immediate = false) {
@@ -1066,6 +1082,10 @@ watch(geometrySignature, scheduleRender);
 watch(executionSignature, () => scheduleExecute());
 
 onMounted(async () => {
+  const savedTheme = localStorage.getItem("json-rivet-theme");
+  applyTheme(savedTheme === "light" || savedTheme === "dark"
+    ? savedTheme
+    : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   client = new JsonEngineClient();
   if (surface.value) {
     renderer = new FlowSurfaceRenderer(surface.value);
@@ -1112,6 +1132,15 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="flow-top-actions">
+        <button
+          type="button"
+          class="theme-toggle"
+          :aria-label="theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'"
+          :title="theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'"
+          @click="toggleTheme"
+        >
+          <span aria-hidden="true">{{ theme === "dark" ? "☀" : "☾" }}</span>
+        </button>
         <div class="file-actions" role="group" aria-label="Файл схемы">
           <button type="button" title="Открыть схему (Ctrl/⌘ O)" @click="openPipelineFile">
             <span>↑</span><span class="file-label">Открыть</span>

@@ -1,5 +1,6 @@
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
+import * as vueCompiler from "vue/compiler-sfc";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 
@@ -48,7 +49,7 @@ export default defineConfig(async () => {
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
     plugins: [
-      vue(),
+      vue({ compiler: vueCompiler }),
       sites(),
       cloudflare({
         viteEnvironment: { name: "server" },
