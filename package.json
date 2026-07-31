@@ -1,0 +1,30 @@
+{
+  "name": "json-rivet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "wasm:dev": "wasm-pack build wasm --mode no-install --target web --dev --no-opt --out-dir ../src/generated/json_engine --out-name json_engine -- --locked --offline",
+    "wasm:release": "wasm-pack build wasm --mode no-install --target web --release --no-opt --out-dir ../src/generated/json_engine --out-name json_engine -- --locked --offline",
+    "dev": "npm run wasm:dev && WRANGLER_LOG_PATH=.wrangler/wrangler.log vite dev",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "build": "npm run wasm:release && npm run typecheck && WRANGLER_LOG_PATH=.wrangler/wrangler.log vite build",
+    "preview": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite preview",
+    "test": "cargo test --manifest-path wasm/Cargo.toml --locked --offline && npm run build && node --test tests/build-output.test.mjs"
+  },
+  "dependencies": {
+    "vue": "3.5.40"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@types/node": "22.19.19",
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "5.9.3",
+    "vite": "8.0.13",
+    "vue-tsc": "3.3.7",
+    "wrangler": "4.92.0"
+  }
+}
