@@ -62,6 +62,12 @@ interface EdgeVisual extends FlowEdge {
   midY: number;
 }
 
+interface CacheEntry<T> {
+  signature: string;
+  response: T;
+  engineVersion: string;
+}
+
 const SAMPLE_JSON = `{
   "stores": [
     {
@@ -176,6 +182,7 @@ const gpuMode = ref<"loading" | "webgpu" | "canvas">("loading");
 const engineVersion = ref("");
 const isRunning = ref(false);
 const lastRunMs = ref(0);
+const cachedBranches = ref(0);
 const notice = ref("Перетащите блок или соедините порты");
 
 let client: JsonEngineClient | null = null;
@@ -189,6 +196,8 @@ let nextEdgeId = 4;
 let nextConditionId = 2;
 let noticeTimer: number | undefined;
 let connectionDrag: { fromId: string; startX: number; startY: number; moved: boolean } | null = null;
+const analysisCache = new Map<string, CacheEntry<AnalyzeResponse>>();
+const outputCache = new Map<string, CacheEntry<TransformResponse>>();
 
 type Gesture =
   | { type: "pan"; startX: number; startY: number; originX: number; originY: number }
@@ -343,6 +352,8 @@ function removeNode(id: string) {
   nodes.value = nodes.value.filter((node) => node.id !== id);
   edges.value = edges.value.filter((edge) => edge.from !== id && edge.to !== id);
   delete analyses[id];
+  analysisCache.delete(id);
+  outputCache.delete(id);
   if (selectedNodeId.value === id) selectedNodeId.value = "";
   if (connectingFrom.value === id) connectingFrom.value = "";
   scheduleRender();
@@ -636,17 +647,50 @@ function scheduleExecute(immediate = false) {
   executeTimer = window.setTimeout(executeGraph, immediate ? 0 : 480);
 }
 
+function applyAnalysisResult(sourceNode: FlowNode, response: AnalyzeResponse) {
+  sourceNode.error = "";
+  if (!response.ok) {
+    delete analyses[sourceNode.id];
+    sourceNode.error = response.error.message;
+    return;
+  }
+  analyses[sourceNode.id] = response;
+}
+
+function applyOutputResult(outputNode: FlowNode, response: TransformResponse) {
+  outputNode.error = "";
+  if (!response.ok) {
+    outputNode.output = "";
+    outputNode.stats = null;
+    outputNode.error = response.error.message;
+    return;
+  }
+  outputNode.output = response.output;
+  outputNode.stats = response;
+}
+
 async function executeGraph() {
   if (!client) return;
   const token = ++executionToken;
   const startedAt = performance.now();
   isRunning.value = true;
+  cachedBranches.value = 0;
 
   try {
     const sourceNodes = nodes.value.filter((node) => node.kind === "source");
     await Promise.all(
       sourceNodes.map(async (sourceNode) => {
-        sourceNode.error = "";
+        const signature = JSON.stringify({
+          data: sourceNode.json ?? "",
+          format: sourceNode.sourceFormat ?? "json",
+          csvDelimiter: sourceNode.csvDelimiter ?? ",",
+        });
+        const cached = analysisCache.get(sourceNode.id);
+        if (cached?.signature === signature) {
+          engineVersion.value = cached.engineVersion;
+          applyAnalysisResult(sourceNode, cached.response);
+          return;
+        }
         const reply = await client!.request<AnalyzeResponse>({
           action: "analyze",
           json: sourceNode.json ?? "",
@@ -654,13 +698,13 @@ async function executeGraph() {
           csv_delimiter: sourceNode.csvDelimiter ?? ",",
         });
         if (token !== executionToken) return;
+        analysisCache.set(sourceNode.id, {
+          signature,
+          response: reply.response,
+          engineVersion: reply.engineVersion,
+        });
         engineVersion.value = reply.engineVersion;
-        if (!reply.response.ok) {
-          delete analyses[sourceNode.id];
-          sourceNode.error = reply.response.error.message;
-          return;
-        }
-        analyses[sourceNode.id] = reply.response;
+        applyAnalysisResult(sourceNode, reply.response);
       }),
     );
     if (token !== executionToken) return;
@@ -688,6 +732,7 @@ async function executeGraph() {
         const fieldNode = ancestors.find((node) => node.kind === "fields");
         const conditionNodes = ancestors.filter((node) => node.kind === "condition");
         if (!sourceNode || !fieldNode) {
+          outputCache.delete(outputNode.id);
           outputNode.output = "";
           outputNode.stats = null;
           outputNode.error = "Соедините источник данных и блок полей";
@@ -695,13 +740,14 @@ async function executeGraph() {
         }
         const selectedFields = fieldNode.selectedFields ?? [];
         if (!selectedFields.length) {
+          outputCache.delete(outputNode.id);
           outputNode.output = "";
           outputNode.stats = null;
           outputNode.error = "В блоке полей ничего не выбрано";
           return;
         }
         const filters = conditionNodes.flatMap((node) => node.conditions ?? []);
-        const reply = await client!.request<TransformResponse>({
+        const request = {
           action: "transform",
           json: sourceNode.json ?? "",
           path: fieldNode.selectedPath ?? "",
@@ -716,17 +762,24 @@ async function executeGraph() {
           output_format: outputNode.outputFormat ?? "flat",
           output_csv_delimiter: outputNode.csvDelimiter ?? ",",
           table_name: outputNode.tableName ?? "result",
-        });
-        if (token !== executionToken) return;
-        engineVersion.value = reply.engineVersion;
-        if (!reply.response.ok) {
-          outputNode.output = "";
-          outputNode.stats = null;
-          outputNode.error = reply.response.error.message;
+        } as const;
+        const signature = JSON.stringify(request);
+        const cached = outputCache.get(outputNode.id);
+        if (cached?.signature === signature) {
+          cachedBranches.value += 1;
+          engineVersion.value = cached.engineVersion;
+          applyOutputResult(outputNode, cached.response);
           return;
         }
-        outputNode.output = reply.response.output;
-        outputNode.stats = reply.response;
+        const reply = await client!.request<TransformResponse>(request);
+        if (token !== executionToken) return;
+        outputCache.set(outputNode.id, {
+          signature,
+          response: reply.response,
+          engineVersion: reply.engineVersion,
+        });
+        engineVersion.value = reply.engineVersion;
+        applyOutputResult(outputNode, reply.response);
       }),
     );
   } catch (error) {
@@ -1107,7 +1160,10 @@ onBeforeUnmount(() => {
         <span v-else class="run-check">✓</span>
         <div>
           <strong>{{ isRunning ? "Выполняю граф" : "Граф актуален" }}</strong>
-          <small>{{ isRunning ? "Rust/WASM обрабатывает блоки" : `${Math.round(lastRunMs)} мс · локально` }}</small>
+          <small>{{ isRunning
+            ? "Проверяю изменённые ветки"
+            : `${Math.round(lastRunMs)} мс · ${cachedBranches ? `${cachedBranches} из кэша` : "пересчитано"}`
+          }}</small>
         </div>
         <button type="button" title="Сбросить доску" @click="resetGraph">↺</button>
       </div>
