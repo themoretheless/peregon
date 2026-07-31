@@ -19,6 +19,27 @@ export interface ArrayInfo {
   fields: FieldInfo[];
 }
 
+export type FilterMode = "all" | "any";
+
+export type FilterOperator =
+  | "equal"
+  | "not_equal"
+  | "greater_than"
+  | "greater_or_equal"
+  | "less_than"
+  | "less_or_equal"
+  | "contains"
+  | "starts_with"
+  | "ends_with"
+  | "exists"
+  | "not_exists";
+
+export interface FilterCondition {
+  field: string;
+  operator: FilterOperator;
+  value: string;
+}
+
 export type EngineRequest =
   | { action: "analyze"; json: string }
   | {
@@ -29,6 +50,8 @@ export type EngineRequest =
       delimiter: string;
       skip_empty: boolean;
       unique: boolean;
+      filters: FilterCondition[];
+      filter_mode: FilterMode;
     };
 
 export interface AnalyzeSuccess {
@@ -43,6 +66,8 @@ export interface TransformSuccess {
   output: string;
   source_items: number;
   object_items: number;
+  matched_items: number;
+  filtered_out: number;
   skipped_items: number;
   empty_values: number;
   values: number;

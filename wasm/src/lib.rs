@@ -1,7 +1,40 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
+
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum FilterMode {
+    #[default]
+    All,
+    Any,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum FilterOperator {
+    Equal,
+    NotEqual,
+    GreaterThan,
+    GreaterOrEqual,
+    LessThan,
+    LessOrEqual,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Exists,
+    NotExists,
+}
+
+#[derive(Debug, Deserialize)]
+struct FilterCondition {
+    field: String,
+    operator: FilterOperator,
+    #[serde(default)]
+    value: String,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -16,6 +49,10 @@ enum EngineRequest {
         delimiter: String,
         skip_empty: bool,
         unique: bool,
+        #[serde(default)]
+        filters: Vec<FilterCondition>,
+        #[serde(default)]
+        filter_mode: FilterMode,
     },
 }
 
@@ -57,6 +94,8 @@ fn handle_request(request: EngineRequest) -> Value {
             delimiter,
             skip_empty,
             unique,
+            filters,
+            filter_mode,
         } => transform(
             &json,
             &path,
@@ -64,6 +103,8 @@ fn handle_request(request: EngineRequest) -> Value {
             &delimiter,
             skip_empty,
             unique,
+            &filters,
+            filter_mode,
         ),
     }
 }
@@ -173,6 +214,8 @@ fn transform(
     delimiter: &str,
     skip_empty: bool,
     unique: bool,
+    filters: &[FilterCondition],
+    filter_mode: FilterMode,
 ) -> Value {
     let value = match parse_json(input) {
         Ok(value) => value,
@@ -203,6 +246,8 @@ fn transform(
     let mut values = Vec::new();
     let mut seen = HashSet::new();
     let mut object_items = 0usize;
+    let mut matched_items = 0usize;
+    let mut filtered_out = 0usize;
     let mut skipped_items = 0usize;
     let mut empty_values = 0usize;
 
@@ -212,6 +257,12 @@ fn transform(
             continue;
         };
         object_items += 1;
+
+        if !matches_filters(object, filters, filter_mode) {
+            filtered_out += 1;
+            continue;
+        }
+        matched_items += 1;
 
         for field in fields {
             match object.get(field) {
@@ -238,10 +289,135 @@ fn transform(
         "output": values.join(delimiter),
         "source_items": items.len(),
         "object_items": object_items,
+        "matched_items": matched_items,
+        "filtered_out": filtered_out,
         "skipped_items": skipped_items,
         "empty_values": empty_values,
         "values": values.len(),
     })
+}
+
+fn matches_filters(
+    object: &Map<String, Value>,
+    filters: &[FilterCondition],
+    mode: FilterMode,
+) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+
+    match mode {
+        FilterMode::All => filters
+            .iter()
+            .all(|condition| matches_condition(object, condition)),
+        FilterMode::Any => filters
+            .iter()
+            .any(|condition| matches_condition(object, condition)),
+    }
+}
+
+fn matches_condition(object: &Map<String, Value>, condition: &FilterCondition) -> bool {
+    let actual = object.get(&condition.field);
+
+    match condition.operator {
+        FilterOperator::Exists => actual.is_some(),
+        FilterOperator::NotExists => actual.is_none(),
+        FilterOperator::Equal => actual
+            .and_then(|value| values_equal(value, &condition.value))
+            .unwrap_or(false),
+        FilterOperator::NotEqual => actual
+            .and_then(|value| values_equal(value, &condition.value))
+            .map(|is_equal| !is_equal)
+            .unwrap_or(false),
+        FilterOperator::GreaterThan => compare_value(actual, &condition.value)
+            .map(|ordering| ordering == Ordering::Greater)
+            .unwrap_or(false),
+        FilterOperator::GreaterOrEqual => compare_value(actual, &condition.value)
+            .map(|ordering| matches!(ordering, Ordering::Greater | Ordering::Equal))
+            .unwrap_or(false),
+        FilterOperator::LessThan => compare_value(actual, &condition.value)
+            .map(|ordering| ordering == Ordering::Less)
+            .unwrap_or(false),
+        FilterOperator::LessOrEqual => compare_value(actual, &condition.value)
+            .map(|ordering| matches!(ordering, Ordering::Less | Ordering::Equal))
+            .unwrap_or(false),
+        FilterOperator::Contains => actual
+            .map(|value| filter_text(value).contains(&expected_string(&condition.value)))
+            .unwrap_or(false),
+        FilterOperator::StartsWith => actual
+            .map(|value| filter_text(value).starts_with(&expected_string(&condition.value)))
+            .unwrap_or(false),
+        FilterOperator::EndsWith => actual
+            .map(|value| filter_text(value).ends_with(&expected_string(&condition.value)))
+            .unwrap_or(false),
+    }
+}
+
+fn values_equal(actual: &Value, expected: &str) -> Option<bool> {
+    match actual {
+        Value::String(value) => Some(value == &expected_string(expected)),
+        Value::Number(value) => {
+            compare_numbers(value, expected).map(|ordering| ordering == Ordering::Equal)
+        }
+        Value::Bool(value) => expected
+            .trim()
+            .parse::<bool>()
+            .ok()
+            .map(|expected_bool| *value == expected_bool),
+        Value::Null => Some(expected.trim().eq_ignore_ascii_case("null")),
+        Value::Array(_) | Value::Object(_) => serde_json::from_str::<Value>(expected.trim())
+            .ok()
+            .map(|expected_value| actual == &expected_value),
+    }
+}
+
+fn compare_value(actual: Option<&Value>, expected: &str) -> Option<Ordering> {
+    match actual? {
+        Value::Number(value) => compare_numbers(value, expected),
+        Value::String(value) => Some(value.as_str().cmp(expected_string(expected).as_str())),
+        Value::Bool(value) => Some(value.cmp(&expected.trim().parse::<bool>().ok()?)),
+        _ => None,
+    }
+}
+
+fn compare_numbers(actual: &serde_json::Number, expected: &str) -> Option<Ordering> {
+    let Value::Number(expected) = serde_json::from_str::<Value>(expected.trim()).ok()? else {
+        return None;
+    };
+
+    if let (Some(actual), Some(expected)) = (actual.as_i64(), expected.as_i64()) {
+        return Some(actual.cmp(&expected));
+    }
+    if let (Some(actual), Some(expected)) = (actual.as_u64(), expected.as_u64()) {
+        return Some(actual.cmp(&expected));
+    }
+    if let (Some(actual), Some(expected)) = (actual.as_i64(), expected.as_u64()) {
+        return Some(if actual < 0 {
+            Ordering::Less
+        } else {
+            (actual as u64).cmp(&expected)
+        });
+    }
+    if let (Some(actual), Some(expected)) = (actual.as_u64(), expected.as_i64()) {
+        return Some(if expected < 0 {
+            Ordering::Greater
+        } else {
+            actual.cmp(&(expected as u64))
+        });
+    }
+
+    actual.as_f64()?.partial_cmp(&expected.as_f64()?)
+}
+
+fn expected_string(value: &str) -> String {
+    value.to_owned()
+}
+
+fn filter_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.to_owned(),
+        _ => value_to_text(value),
+    }
 }
 
 fn push_value(
@@ -341,6 +517,11 @@ mod tests {
         }));
         assert_eq!(result["output"], "Москва 4-10, Белгород-2");
         assert_eq!(result["values"], 2);
+        assert_eq!(result["source_items"], 2);
+        assert_eq!(result["object_items"], 2);
+        assert_eq!(result["matched_items"], 2);
+        assert_eq!(result["filtered_out"], 0);
+        assert_eq!(result["skipped_items"], 0);
     }
 
     #[test]
@@ -394,5 +575,173 @@ mod tests {
             "unique": false
         }));
         assert_eq!(result["output"], "\"a, b\", \"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn filters_numeric_fields_before_flattening() {
+        let input = r#"[
+            {"name":"Активный","state":1},
+            {"name":"Скрытый","state":0},
+            {"name":"Без статуса"}
+        ]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["name"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"state","operator":"equal","value":"1"}],
+            "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "Активный");
+        assert_eq!(result["matched_items"], 1);
+        assert_eq!(result["filtered_out"], 2);
+    }
+
+    #[test]
+    fn combines_conditions_with_any_mode() {
+        let input = r#"[
+            {"name":"Москва","state":1,"locality":"Москва"},
+            {"name":"Белгород","state":0,"locality":"Белгород"},
+            {"name":"Курск","state":0,"locality":"Курск"}
+        ]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["name"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [
+                {"field":"state","operator":"equal","value":"1"},
+                {"field":"locality","operator":"contains","value":"город"}
+            ],
+            "filter_mode": "any"
+        }));
+        assert_eq!(result["output"], "Москва, Белгород");
+        assert_eq!(result["matched_items"], 2);
+    }
+
+    #[test]
+    fn distinguishes_present_null_from_missing() {
+        let input = r#"[{"name":"null","x":null},{"name":"missing"}]"#;
+        let exists = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["name"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"x","operator":"exists"}],
+            "filter_mode": "all"
+        }));
+        let missing = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["name"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"x","operator":"not_exists"}],
+            "filter_mode": "all"
+        }));
+        assert_eq!(exists["output"], "null");
+        assert_eq!(missing["output"], "missing");
+    }
+
+    #[test]
+    fn missing_field_does_not_match_not_equal() {
+        let input = r#"[{"name":"zero","state":0},{"name":"missing"}]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["name"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"state","operator":"not_equal","value":"1"}],
+            "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "zero");
+        assert_eq!(result["matched_items"], 1);
+    }
+
+    #[test]
+    fn filtering_happens_before_empty_and_value_accounting() {
+        let input = r#"[
+            {"id":"keep-1","status":"open","payload":null},
+            17,
+            {"id":"drop","status":"closed"},
+            {"id":"keep-2","status":"open"}
+        ]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["id", "payload"],
+            "delimiter": " | ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"status","operator":"equal","value":"open"}],
+            "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "keep-1 | keep-2");
+        assert_eq!(result["source_items"], 4);
+        assert_eq!(result["object_items"], 3);
+        assert_eq!(result["matched_items"], 2);
+        assert_eq!(result["filtered_out"], 1);
+        assert_eq!(result["skipped_items"], 1);
+        assert_eq!(result["empty_values"], 2);
+        assert_eq!(result["values"], 2);
+    }
+
+    #[test]
+    fn preserves_large_integer_precision() {
+        let input = r#"[
+            {"id":"exact","n":9007199254740993},
+            {"id":"adjacent","n":9007199254740992}
+        ]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["id"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{
+                "field":"n",
+                "operator":"equal",
+                "value":"9007199254740993"
+            }],
+            "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "exact");
+        assert_eq!(result["matched_items"], 1);
+    }
+
+    #[test]
+    fn invalid_numeric_operand_never_broad_matches() {
+        let input = r#"[{"id":"one","state":1},{"id":"zero","state":0}]"#;
+        let result = request(json!({
+            "action": "transform",
+            "json": input,
+            "path": "",
+            "fields": ["id"],
+            "delimiter": ", ",
+            "skip_empty": true,
+            "unique": false,
+            "filters": [{"field":"state","operator":"not_equal","value":"abc"}],
+            "filter_mode": "all"
+        }));
+        assert_eq!(result["output"], "");
+        assert_eq!(result["matched_items"], 0);
+        assert_eq!(result["filtered_out"], 2);
     }
 }

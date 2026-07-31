@@ -12,9 +12,42 @@ import type {
   AnalyzeResponse,
   AnalyzeSuccess,
   EngineError,
+  FilterCondition,
+  FilterMode,
+  FilterOperator,
   TransformResponse,
   TransformSuccess,
 } from "./engine/types";
+
+type UiFilterCondition = FilterCondition & { id: number };
+
+const FILTER_OPERATOR_OPTIONS: Array<{ value: FilterOperator; label: string }> = [
+  { value: "equal", label: "равно" },
+  { value: "not_equal", label: "не равно" },
+  { value: "greater_than", label: "больше" },
+  { value: "greater_or_equal", label: "больше или равно" },
+  { value: "less_than", label: "меньше" },
+  { value: "less_or_equal", label: "меньше или равно" },
+  { value: "contains", label: "содержит" },
+  { value: "starts_with", label: "начинается с" },
+  { value: "ends_with", label: "заканчивается на" },
+  { value: "exists", label: "поле существует" },
+  { value: "not_exists", label: "поля нет" },
+];
+
+const FILTER_OPERATOR_SYMBOLS: Record<FilterOperator, string> = {
+  equal: "=",
+  not_equal: "≠",
+  greater_than: ">",
+  greater_or_equal: "≥",
+  less_than: "<",
+  less_or_equal: "≤",
+  contains: "содержит",
+  starts_with: "начинается с",
+  ends_with: "заканчивается на",
+  exists: "существует",
+  not_exists: "не существует",
+};
 
 const SAMPLE_JSON = `{
   "stores": [
@@ -46,6 +79,10 @@ const parseError = ref<EngineError | null>(null);
 const runtimeError = ref("");
 const selectedPath = ref("");
 const selectedFields = ref<string[]>([]);
+const filterMode = ref<FilterMode>("all");
+const filterConditions = ref<UiFilterCondition[]>([
+  { id: 1, field: "state", operator: "equal", value: "1" },
+]);
 const delimiter = ref(", ");
 const skipEmpty = ref(true);
 const unique = ref(false);
@@ -65,6 +102,7 @@ let transformTimer: number | undefined;
 let copyTimer: number | undefined;
 let analyzeToken = 0;
 let transformToken = 0;
+let nextFilterId = 2;
 
 const inputBytes = computed(() => new TextEncoder().encode(jsonInput.value).length);
 const inputLines = computed(() => (jsonInput.value.match(/\n/g)?.length ?? 0) + 1);
@@ -86,10 +124,50 @@ const allFieldsSelected = computed(
 );
 
 const hasOutput = computed(() => Boolean(result.value?.output));
+const engineFilters = computed<FilterCondition[]>(() =>
+  filterConditions.value
+    .filter((condition) => condition.field)
+    .map(({ field, operator, value }) => ({ field, operator, value })),
+);
+const filterSignature = computed(() =>
+  JSON.stringify([filterMode.value, engineFilters.value]),
+);
+const filterSummary = computed(() => {
+  if (!engineFilters.value.length) return "Без условий — проходят все объекты";
+  const joiner = filterMode.value === "all" ? "  И  " : "  ИЛИ  ";
+  return engineFilters.value
+    .map((condition) => {
+      const operator = FILTER_OPERATOR_SYMBOLS[condition.operator];
+      return requiresFilterValue(condition.operator)
+        ? `${condition.field} ${operator} ${condition.value || "…"}`
+        : `${condition.field} ${operator}`;
+    })
+    .join(joiner);
+});
 const fieldOrderPreview = computed(() => {
   if (!selectedFields.value.length) return "Сначала выберите хотя бы одно поле";
   const names = selectedFields.value.map((field) => `«${field}»`).join(" → ");
   return `Объект 1: ${names} · затем объект 2`;
+});
+
+const emptyResultTitle = computed(() => {
+  if (!selectedFields.value.length) return "Выберите поля";
+  if (result.value?.matched_items === 0) return "Нет совпадений";
+  if (result.value && result.value.values === 0) return "Нет значений";
+  return "Результат появится здесь";
+});
+
+const emptyResultCopy = computed(() => {
+  if (!selectedFields.value.length) {
+    return "Отметьте одно или несколько полей во втором блоке.";
+  }
+  if (result.value?.matched_items === 0) {
+    return "Ни один объект не прошёл условия. Измените фильтр или выберите режим «Любое».";
+  }
+  if (result.value && result.value.values === 0) {
+    return "Объекты прошли фильтр, но выбранные поля оказались пустыми.";
+  }
+  return "Rust/WASM обработает данные автоматически.";
 });
 
 const delimiterText = computed({
@@ -182,6 +260,9 @@ async function runAnalyze() {
           candidate.fields[0].name,
       ];
     }
+    filterConditions.value = filterConditions.value.filter((condition) =>
+      available.has(condition.field),
+    );
 
     scheduleTransform(true);
   } catch (error) {
@@ -219,6 +300,8 @@ async function runTransform() {
       delimiter: delimiter.value,
       skip_empty: skipEmpty.value,
       unique: unique.value,
+      filters: engineFilters.value,
+      filter_mode: filterMode.value,
     });
     if (token !== transformToken) return;
 
@@ -266,8 +349,58 @@ function moveField(index: number, direction: -1 | 1) {
   selectedFields.value = reordered;
 }
 
+function requiresFilterValue(operator: FilterOperator) {
+  return operator !== "exists" && operator !== "not_exists";
+}
+
+function filterValuePlaceholder(condition: UiFilterCondition) {
+  const kind = currentArray.value?.fields.find(
+    (field) => field.name === condition.field,
+  )?.kind;
+  if (kind === "number") return "Например, 1";
+  if (kind === "boolean") return "true или false";
+  if (kind === "null") return "null";
+  return "Значение";
+}
+
+function addFilterCondition() {
+  const fields = currentArray.value?.fields ?? [];
+  if (!fields.length) return;
+  const preferred = fields.find((field) => field.name === "state") ?? fields[0];
+  filterConditions.value = [
+    ...filterConditions.value,
+    {
+      id: nextFilterId++,
+      field: preferred.name,
+      operator: "equal",
+      value: preferred.name === "state" ? "1" : "",
+    },
+  ];
+}
+
+function removeFilterCondition(id: number) {
+  filterConditions.value = filterConditions.value.filter(
+    (condition) => condition.id !== id,
+  );
+}
+
+function normalizeFilterConditions() {
+  const available = new Set(currentArray.value?.fields.map((field) => field.name) ?? []);
+  filterConditions.value = filterConditions.value.filter((condition) =>
+    available.has(condition.field),
+  );
+}
+
+function resetSampleFilter() {
+  filterMode.value = "all";
+  filterConditions.value = [
+    { id: nextFilterId++, field: "state", operator: "equal", value: "1" },
+  ];
+}
+
 function useSample() {
   jsonInput.value = SAMPLE_JSON;
+  resetSampleFilter();
   scheduleAnalyze(true);
 }
 
@@ -339,6 +472,7 @@ watch(
     delimiter,
     skipEmpty,
     unique,
+    filterSignature,
   ],
   () => scheduleTransform(),
 );
@@ -384,8 +518,8 @@ onBeforeUnmount(() => {
           <h1 id="page-title">JSON <span>в плоский список</span></h1>
         </div>
         <p class="hero-copy">
-          Вставьте JSON, выберите массив и нужные поля. Rust-модуль соберёт
-          значения в одну строку — быстро и без отправки данных на сервер.
+          Вставьте JSON, выберите массив, задайте условия и нужные поля.
+          Rust-модуль отфильтрует объекты и соберёт значения в одну строку.
         </p>
       </section>
 
@@ -400,9 +534,19 @@ onBeforeUnmount(() => {
           <strong>Фильтр полей</strong>
         </div>
         <i aria-hidden="true">→</i>
-        <div class="pipeline-step" :class="{ active: result }">
+        <div class="pipeline-step" :class="{ active: currentArray }">
           <span>03</span>
-          <strong>Плоский список</strong>
+          <strong>Условия</strong>
+        </div>
+        <i aria-hidden="true">→</i>
+        <div class="pipeline-step" :class="{ active: selectedFields.length }">
+          <span>04</span>
+          <strong>Формат</strong>
+        </div>
+        <i aria-hidden="true">→</i>
+        <div class="pipeline-step" :class="{ active: result }">
+          <span>05</span>
+          <strong>Результат</strong>
         </div>
       </nav>
 
@@ -480,7 +624,7 @@ onBeforeUnmount(() => {
             <template v-if="analysis?.array_paths.length">
               <label class="control-label" for="array-path">Массив с объектами</label>
               <div class="select-wrap">
-                <select id="array-path" v-model="selectedPath">
+                <select id="array-path" v-model="selectedPath" @change="normalizeFilterConditions">
                   <option
                     v-for="candidate in analysis.array_paths"
                     :key="candidate.path || '$'"
@@ -564,10 +708,129 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
+          <section class="panel condition-panel" aria-labelledby="condition-title">
+            <div class="panel-heading compact">
+              <div>
+                <span class="step-number condition-accent">03</span>
+                <div>
+                  <p>Отбор объектов</p>
+                  <h2 id="condition-title">Условия фильтрации</h2>
+                </div>
+              </div>
+              <span v-if="filterConditions.length" class="condition-count">
+                {{ filterConditions.length }}
+              </span>
+            </div>
+
+            <template v-if="currentArray?.fields.length">
+              <div class="logic-row">
+                <span class="control-label">Если условий несколько</span>
+                <div class="logic-switch" role="group" aria-label="Логика условий">
+                  <button
+                    type="button"
+                    :class="{ active: filterMode === 'all' }"
+                    :aria-pressed="filterMode === 'all'"
+                    @click="filterMode = 'all'"
+                  >
+                    Все <small>И</small>
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: filterMode === 'any' }"
+                    :aria-pressed="filterMode === 'any'"
+                    @click="filterMode = 'any'"
+                  >
+                    Любое <small>ИЛИ</small>
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="filterConditions.length" class="condition-list">
+                <div
+                  v-for="(condition, index) in filterConditions"
+                  :key="condition.id"
+                  class="condition-row"
+                >
+                  <div class="condition-index">{{ index + 1 }}</div>
+                  <label class="condition-control field-control">
+                    <span>Поле</span>
+                    <select
+                      v-model="condition.field"
+                      :aria-label="`Поле условия ${index + 1}`"
+                    >
+                      <option
+                        v-for="field in currentArray.fields"
+                        :key="field.name"
+                        :value="field.name"
+                      >
+                        {{ field.name }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="condition-control operator-control">
+                    <span>Оператор</span>
+                    <select
+                      v-model="condition.operator"
+                      :aria-label="`Оператор условия ${index + 1}`"
+                    >
+                      <option
+                        v-for="operator in FILTER_OPERATOR_OPTIONS"
+                        :key="operator.value"
+                        :value="operator.value"
+                      >
+                        {{ operator.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="remove-condition"
+                    :aria-label="`Удалить условие ${index + 1}`"
+                    @click="removeFilterCondition(condition.id)"
+                  >
+                    ×
+                  </button>
+                  <label
+                    v-if="requiresFilterValue(condition.operator)"
+                    class="condition-control value-control"
+                  >
+                    <span>Значение</span>
+                    <input
+                      v-model="condition.value"
+                      :aria-label="`Значение условия ${index + 1}`"
+                      :placeholder="filterValuePlaceholder(condition)"
+                    />
+                  </label>
+                  <div v-else class="unary-note">Значение не требуется</div>
+                </div>
+              </div>
+
+              <div v-else class="conditions-empty">
+                <strong>Без фильтрации</strong>
+                <span>Сейчас проходят все объекты массива.</span>
+              </div>
+
+              <button type="button" class="add-condition" @click="addFilterCondition">
+                <span>+</span> Добавить условие
+              </button>
+
+              <div class="condition-summary">
+                <span aria-hidden="true">ƒ</span>
+                <code>{{ filterSummary }}</code>
+              </div>
+            </template>
+
+            <div v-else class="panel-empty condition-empty">
+              <span>?</span>
+              <strong>Сначала выберите массив</strong>
+              <p>Условия применяются к полям каждого объекта.</p>
+            </div>
+          </section>
+
           <section class="panel transform-panel" aria-labelledby="transform-title">
             <div class="panel-heading compact">
               <div>
-                <span class="step-number accent">03</span>
+                <span class="step-number accent">04</span>
                 <div>
                   <p>Формат результата</p>
                   <h2 id="transform-title">Плоский список</h2>
@@ -615,7 +878,7 @@ onBeforeUnmount(() => {
         <section class="panel output-panel" aria-labelledby="output-title">
           <div class="panel-heading">
             <div>
-              <span class="step-number accent">04</span>
+              <span class="step-number accent">05</span>
               <div>
                 <p>Готово к использованию</p>
                 <h2 id="output-title">Результат</h2>
@@ -655,10 +918,8 @@ onBeforeUnmount(() => {
             ></textarea>
             <div v-else class="result-placeholder">
               <span aria-hidden="true">→</span>
-              <strong>{{ selectedFields.length ? "Результат появится здесь" : "Выберите поля" }}</strong>
-              <p>
-                {{ selectedFields.length ? "Rust/WASM обработает данные автоматически." : "Отметьте одно или несколько полей во втором блоке." }}
-              </p>
+              <strong>{{ emptyResultTitle }}</strong>
+              <p>{{ emptyResultCopy }}</p>
             </div>
           </div>
 
@@ -668,9 +929,9 @@ onBeforeUnmount(() => {
           </div>
 
           <footer v-if="result" class="result-stats">
-            <div><strong>{{ result.source_items }}</strong><span>объектов</span></div>
+            <div><strong>{{ result.matched_items }} / {{ result.object_items }}</strong><span>прошли фильтр</span></div>
             <div><strong>{{ result.values }}</strong><span>значений</span></div>
-            <div><strong>{{ result.empty_values }}</strong><span>пустых</span></div>
+            <div><strong>{{ result.filtered_out }}</strong><span>отсеяно</span></div>
             <div><strong>{{ formatDuration(durationMs) }}</strong><span>обработка</span></div>
           </footer>
 
