@@ -471,6 +471,10 @@ function requiresFilterValue(operator: FilterOperator) {
   return operator !== "exists" && operator !== "not_exists";
 }
 
+function filterOperatorLabel(operator: FilterOperator) {
+  return FILTER_OPERATOR_OPTIONS.find((option) => option.value === operator)?.label ?? operator;
+}
+
 function filterValuePlaceholder(condition: UiFilterCondition) {
   const kind = currentArray.value?.fields.find(
     (field) => field.name === condition.field,
@@ -1137,51 +1141,98 @@ onBeforeUnmount(() => {
             </div>
           </header>
 
-          <div class="filter-inspector-rule">
-            <span aria-hidden="true">ƒ</span>
-            <code>{{ filterSummary }}</code>
-          </div>
-
-          <div v-if="filterPreviewError" class="message error-message inspector-message" role="alert">
-            <strong>Просмотр недоступен</strong>
-            <span>{{ filterPreviewError }}</span>
-          </div>
-
-          <div v-else-if="isPreviewingFilter || !filterPreview" class="filter-inspector-loading" role="status">
-            <span class="working"><i></i> Rust/WASM готовит сравнение…</span>
-          </div>
-
-          <div v-else class="filter-flow-grid">
-            <article class="filter-flow-pane incoming-pane">
-              <header>
-                <div>
-                  <span class="flow-label">Вход</span>
-                  <h3>Пришло в условие</h3>
-                </div>
-                <span class="flow-count">
-                  {{ filterPreview.source_items }} элементов
-                </span>
-              </header>
-              <pre tabindex="0" aria-label="JSON до фильтрации">{{ filterPreview.input_json }}</pre>
-            </article>
-
-            <div class="filter-flow-arrow" aria-hidden="true">
-              <span>→</span>
-              <small>Rust<br />WASM</small>
+          <div class="filter-inspector-layout">
+            <div v-if="filterPreviewError" class="message error-message inspector-message" role="alert">
+              <strong>Просмотр недоступен</strong>
+              <span>{{ filterPreviewError }}</span>
             </div>
 
-            <article class="filter-flow-pane outgoing-pane">
-              <header>
+            <div
+              v-else-if="isPreviewingFilter || !filterPreview"
+              class="filter-inspector-loading"
+              role="status"
+            >
+              <span class="working"><i></i> Rust/WASM готовит сравнение…</span>
+            </div>
+
+            <div v-else class="filter-flow-stack">
+              <article class="filter-flow-pane incoming-pane">
+                <header>
+                  <div>
+                    <span class="flow-label">До</span>
+                    <h3>Пришло в условие</h3>
+                  </div>
+                  <span class="flow-count">
+                    {{ filterPreview.source_items }} элементов
+                  </span>
+                </header>
+                <pre tabindex="0" aria-label="JSON до фильтрации">{{ filterPreview.input_json }}</pre>
+              </article>
+
+              <div class="filter-flow-arrow" aria-hidden="true">
+                <span>↓</span>
+                <small>Rust / WASM</small>
+              </div>
+
+              <article class="filter-flow-pane outgoing-pane">
+                <header>
+                  <div>
+                    <span class="flow-label">После</span>
+                    <h3>Прошло условие</h3>
+                  </div>
+                  <span class="flow-count passed">
+                    {{ filterPreview.matched_items }} объектов
+                  </span>
+                </header>
+                <pre tabindex="0" aria-label="JSON после фильтрации">{{ filterPreview.output_json }}</pre>
+              </article>
+            </div>
+
+            <aside class="filter-rules-panel" aria-labelledby="filter-rules-title">
+              <header class="filter-rules-header">
                 <div>
-                  <span class="flow-label">Выход</span>
-                  <h3>Прошло условие</h3>
+                  <span class="flow-label">Логика отбора</span>
+                  <h3 id="filter-rules-title">Условия</h3>
                 </div>
-                <span class="flow-count passed">
-                  {{ filterPreview.matched_items }} объектов
+                <span class="filter-mode-badge">
+                  {{ filterMode === "all" ? "Все · И" : "Любое · ИЛИ" }}
                 </span>
               </header>
-              <pre tabindex="0" aria-label="JSON после фильтрации">{{ filterPreview.output_json }}</pre>
-            </article>
+
+              <div v-if="filterConditions.length" class="filter-rule-list">
+                <article
+                  v-for="(condition, index) in filterConditions"
+                  :key="condition.id"
+                  class="filter-rule-card"
+                >
+                  <span class="filter-rule-index">{{ index + 1 }}</span>
+                  <div class="filter-rule-field">
+                    <small>Поле</small>
+                    <code>{{ condition.field }}</code>
+                  </div>
+                  <div class="filter-rule-operation">
+                    <small>{{ filterOperatorLabel(condition.operator) }}</small>
+                    <strong>
+                      {{ FILTER_OPERATOR_SYMBOLS[condition.operator] }}
+                      <code v-if="requiresFilterValue(condition.operator)">
+                        {{ condition.value || "…" }}
+                      </code>
+                    </strong>
+                  </div>
+                </article>
+              </div>
+
+              <div v-else class="filter-rules-empty">
+                <span aria-hidden="true">∅</span>
+                <strong>Без условий</strong>
+                <p>Все объекты проходят дальше.</p>
+              </div>
+
+              <div class="filter-rules-summary">
+                <span aria-hidden="true">ƒ</span>
+                <code>{{ filterSummary }}</code>
+              </div>
+            </aside>
           </div>
 
           <footer v-if="filterPreview" class="filter-inspector-stats">
