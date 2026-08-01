@@ -1,6 +1,6 @@
 {
   "name": "peregon",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A visual data pipeline builder powered by Vue 3, WebGPU, and Rust/WebAssembly.",
   "private": true,
   "type": "module",

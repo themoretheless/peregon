@@ -37,10 +37,10 @@ jobs:
         with:
           workspaces: wasm
 
-      - name: Install wasm-pack
+      - name: Install WebAssembly build tools
         uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack@0.14.0
+          tool: wasm-pack@0.14.0,wasm-bindgen-cli@0.2.125
 
       - name: Install JavaScript dependencies
         run: npm ci
