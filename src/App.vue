@@ -943,6 +943,15 @@ function sanitizePersistedNode(node: FlowNode): FlowNode {
   return rest as FlowNode;
 }
 
+function clearPersistedPipeline() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(PIPELINE_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors so auto-save failures stay best-effort.
+  }
+}
+
 function createPipelineV2(): PipelineFileV2 {
   const graph = toGraphV2();
   return {
@@ -978,7 +987,7 @@ function persistCurrentPipeline() {
   try {
     localStorage.setItem(PIPELINE_STORAGE_KEY, JSON.stringify(snapshot));
   } catch {
-    localStorage.removeItem(PIPELINE_STORAGE_KEY);
+    clearPersistedPipeline();
   }
 }
 
@@ -989,7 +998,8 @@ function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
   if (typeof candidate.title !== "undefined" && typeof candidate.title !== "string") return false;
   if (!candidate.view || typeof candidate.view !== "object" || Array.isArray(candidate.view)) return false;
   const view = candidate.view as Record<string, unknown>;
-  if (typeof view.panX !== "number" || typeof view.panY !== "number" || typeof view.zoom !== "number") return false;
+  if (typeof view.panX !== "number" || typeof view.panY !== "number" || typeof view.zoom !== "number"
+    || !Number.isFinite(view.panX) || !Number.isFinite(view.panY) || !Number.isFinite(view.zoom)) return false;
   if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.edges)) return false;
   const validNodeKinds = new Set(["source", "fields", "condition", "output"]);
   return candidate.nodes.every((node) => {
@@ -1000,7 +1010,9 @@ function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
       && validNodeKinds.has(candidateNode.kind as string)
       && typeof candidateNode.title === "string"
       && typeof candidateNode.x === "number"
-      && typeof candidateNode.y === "number";
+      && typeof candidateNode.y === "number"
+      && Number.isFinite(candidateNode.x)
+      && Number.isFinite(candidateNode.y);
   }) && candidate.edges.every((edge) => {
     if (!edge || typeof edge !== "object" || Array.isArray(edge)) return false;
     const candidateEdge = edge as Record<string, unknown>;
@@ -1017,7 +1029,7 @@ function readPersistedPipeline(): LoadedPipeline | null {
   try {
     const parsed = JSON.parse(raw);
     if (!isValidStoredPipeline(parsed)) {
-      localStorage.removeItem(PIPELINE_STORAGE_KEY);
+      clearPersistedPipeline();
       return null;
     }
     return {
@@ -1643,7 +1655,7 @@ onBeforeUnmount(() => {
           <span>Блоки</span>
           <strong>Добавить на холст</strong>
         </div>
-        <div class="library-presets" aria-label="Пресеты схемы">
+        <div class="library-presets" role="group" aria-label="Пресеты схемы">
           <span>Пресеты</span>
           <div class="preset-list">
             <button
