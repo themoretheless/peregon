@@ -155,6 +155,26 @@ const NODE_META: Record<NodeKind, { label: string; eyebrow: string; icon: string
   output: { label: "Результат", eyebrow: "Выход", icon: "→", color: "#d06a35" },
 };
 
+const VERSION_INFO = __PEREGON_VERSION_INFO__;
+const VERSION_GROUPS = [
+  {
+    label: "Приложение",
+    packages: [VERSION_INFO.project, VERSION_INFO.engine],
+  },
+  {
+    label: "Runtime · npm",
+    packages: VERSION_INFO.packages.npmRuntime,
+  },
+  {
+    label: "Runtime · Rust",
+    packages: VERSION_INFO.packages.rustRuntime,
+  },
+  {
+    label: "Сборка",
+    packages: VERSION_INFO.packages.build,
+  },
+] as const;
+
 const LIBRARY_BLOCKS: BlockDefinition[] = [
   { key: "json", kind: "source", format: "json", label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9", keywords: "json данные источник" },
   { key: "csv", kind: "source", format: "csv", label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf", keywords: "csv таблица данные источник" },
@@ -1325,10 +1345,30 @@ onBeforeUnmount(() => {
     <header class="flow-topbar">
       <div class="flow-brand">
         <span class="flow-brand-mark">P</span>
-        <span>
+        <span class="flow-brand-copy">
           <strong>PEREGON</strong>
           <small>Visual pipeline</small>
         </span>
+        <details class="version-menu">
+          <summary :aria-label="`Версии Peregon ${VERSION_INFO.project.version} и пакетов`">
+            v{{ VERSION_INFO.project.version }}
+          </summary>
+          <div class="version-popover">
+            <div class="version-popover-heading">
+              <strong>Версии</strong>
+              <small>Текущая сборка</small>
+            </div>
+            <section v-for="group in VERSION_GROUPS" :key="group.label">
+              <h2>{{ group.label }}</h2>
+              <dl>
+                <template v-for="packageInfo in group.packages" :key="packageInfo.name">
+                  <dt>{{ packageInfo.name }}</dt>
+                  <dd>{{ packageInfo.version }}</dd>
+                </template>
+              </dl>
+            </section>
+          </div>
+        </details>
       </div>
 
       <div class="flow-document-title">

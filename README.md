@@ -1,56 +1,71 @@
 # Peregon
 
-Визуальный конструктор конвейеров данных на Vue 3 с Rust/WebAssembly-движком.
-Он объединяет источники, фильтры, выбор полей и преобразование результата в
-JSON, CSV, XML, SQL или плоский список.
+Peregon is a visual data pipeline builder powered by Vue 3 and a
+Rust/WebAssembly engine. It connects data sources, filters, field projections,
+and output transformations into JSON, CSV, XML, SQL, or plain-text lists.
 
-## Возможности
+## Features
 
-- форматирование и проверка JSON в Rust;
-- автоматический поиск массивов и объединение полей по всем объектам;
-- выбор и изменение порядка полей;
-- условия фильтрации по полям с логикой «все»/«любое»;
-- разделители: запятая, точка с запятой, новая строка или свой вариант;
-- пропуск пустых и удаление дублей;
-- CSV-подобное экранирование значений;
-- копирование и скачивание результата;
-- обработка в отдельном Web Worker — данные не покидают браузер.
-- собственный инкрементальный syntax engine без внешнего редактора: C#, Rust,
-  JavaScript, TypeScript, Python, SQL, JSON, XML, YAML, Java и INI.
-- расширяемый registry для собственных языков, валидаторов и форматтеров;
-- локальный пересчёт строк после правки, структурная проверка JSON/XML и
-  lossless-форматирование JSON.
+- Rust-powered JSON validation and formatting;
+- automatic array discovery and field merging across objects;
+- field selection and reordering;
+- field-based filters with all/any matching logic;
+- comma, semicolon, newline, and custom delimiters;
+- empty-value skipping and deduplication;
+- CSV-compatible value escaping;
+- result copying and downloading;
+- processing in a dedicated Web Worker, so data never leaves the browser;
+- a custom incremental syntax engine with no external editor dependency,
+  supporting C#, Rust, JavaScript, TypeScript, Python, SQL, JSON, XML, YAML,
+  Java, and INI;
+- an extensible registry for custom languages, validators, and formatters;
+- local line recomputation after edits, structural JSON/XML validation, and
+  lossless JSON formatting.
 
-## Локальный запуск
+## Local development
 
-Требуются Node.js 22+, Rust 1.96 и `wasm-pack`.
+Requires Node.js 22+, Rust 1.96, and `wasm-pack`.
 
 ```bash
 npm install
 npm run dev
 ```
 
-`npm run dev` сначала компилирует crate из `wasm/` в WebAssembly, затем запускает
-Vite. Для полной проверки используйте:
+`npm run dev` compiles the crate in `wasm/` to WebAssembly and then starts Vite.
+Run the complete test suite with:
 
 ```bash
 npm test
 ```
 
-## Архитектура
+## GitHub Pages
 
-- `src/` — Vue-интерфейс, клиент фонового процесса и Web Worker;
+Deployment runs automatically from the `main` branch through GitHub Actions.
+In the repository settings, select
+**Settings → Pages → Source → GitHub Actions**.
+
+To verify the static Pages build locally:
+
+```bash
+cargo fetch --manifest-path wasm/Cargo.toml --locked
+npm run build:pages
+```
+
+## Architecture
+
+- `src/` — Vue interface, background-process client, and Web Worker;
 - [`themoretheless/tokenizer`](https://github.com/themoretheless/tokenizer) —
-  отдельный Rust crate `themoretheless-tokenizer`; Peregon фиксирует его по
-  релизному Git-тегу и преобразует UTF-8 byte spans в UTF-16 offsets на границе
-  WASM;
-- `packages/syntax-engine/` — самостоятельный npm-пакет с расширяемым ядром
-  токенизации, языковыми профилями, диагностикой и форматтером JSON; публичный
-  API описан в
+  a standalone `themoretheless-tokenizer` Rust crate pinned to a release Git
+  tag; Peregon converts its UTF-8 byte spans to UTF-16 offsets at the WASM
+  boundary;
+- `packages/syntax-engine/` — a standalone npm package with an extensible
+  tokenization core, language profiles, diagnostics, and a JSON formatter; its
+  public API is documented in
   [`packages/syntax-engine/README.md`](packages/syntax-engine/README.md);
-- `wasm/` — Rust-движок анализа и преобразования данных;
-- `worker/` — минимальный Cloudflare Worker для раздачи SPA;
-- `tests/` — smoke-тест структуры production-сборки.
+- `wasm/` — Rust engine for data analysis and transformation;
+- `worker/` — minimal Cloudflare Worker that serves the SPA;
+- `tests/` — production-build smoke tests.
 
-Архитектурная граница между текущим Rust/WASM runtime и опциональным будущим
-DuckDB backend описана в [`docs/runtime-backends.md`](docs/runtime-backends.md).
+The architecture boundary between the current Rust/WASM runtime and an
+optional future DuckDB backend is documented in
+[`docs/runtime-backends.md`](docs/runtime-backends.md).
