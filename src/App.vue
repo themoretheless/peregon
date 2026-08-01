@@ -954,25 +954,41 @@ function persistCurrentPipeline() {
   localStorage.setItem(PIPELINE_STORAGE_KEY, JSON.stringify(snapshot));
 }
 
+function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.version !== 1) return false;
+  if (typeof candidate.title !== "undefined" && typeof candidate.title !== "string") return false;
+  if (!candidate.view || typeof candidate.view !== "object" || Array.isArray(candidate.view)) return false;
+  const view = candidate.view as Record<string, unknown>;
+  if (typeof view.panX !== "number" || typeof view.panY !== "number" || typeof view.zoom !== "number") return false;
+  if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.edges)) return false;
+  return candidate.nodes.every((node) => node && typeof node === "object" && !Array.isArray(node) && typeof (node as Record<string, unknown>).id === "string")
+    && candidate.edges.every((edge) => edge && typeof edge === "object" && !Array.isArray(edge) && typeof (edge as Record<string, unknown>).id === "string" && typeof (edge as Record<string, unknown>).from === "string" && typeof (edge as Record<string, unknown>).to === "string");
+}
+
 function readPersistedPipeline(): LoadedPipeline | null {
   if (typeof window === "undefined") return null;
   const raw = localStorage.getItem(PIPELINE_STORAGE_KEY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== 1 || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return null;
+    if (!isValidStoredPipeline(parsed)) {
+      localStorage.removeItem(PIPELINE_STORAGE_KEY);
+      return null;
+    }
     return {
       title: typeof parsed.title === "string" ? parsed.title : "Обработка магазинов",
       view: {
-        panX: typeof parsed.view?.panX === "number" ? parsed.view.panX : 0,
-        panY: typeof parsed.view?.panY === "number" ? parsed.view.panY : 0,
-        zoom: typeof parsed.view?.zoom === "number" ? parsed.view.zoom : 0.8,
+        panX: parsed.view.panX,
+        panY: parsed.view.panY,
+        zoom: parsed.view.zoom,
       },
-      nodes: parsed.nodes as FlowNode[],
-      edges: parsed.edges as FlowEdge[],
+      nodes: parsed.nodes,
+      edges: parsed.edges,
     };
   } catch {
+    localStorage.removeItem(PIPELINE_STORAGE_KEY);
     return null;
   }
 }
