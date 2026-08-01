@@ -952,6 +952,15 @@ function clearPersistedPipeline() {
   }
 }
 
+function readPersistedPipelineRaw(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(PIPELINE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function createPipelineV2(): PipelineFileV2 {
   const graph = toGraphV2();
   return {
@@ -1005,6 +1014,10 @@ function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
   return candidate.nodes.every((node) => {
     if (!node || typeof node !== "object" || Array.isArray(node)) return false;
     const candidateNode = node as Record<string, unknown>;
+    if (candidateNode.selectedPath !== undefined && typeof candidateNode.selectedPath !== "string") return false;
+    if (candidateNode.selectedFields !== undefined && (!Array.isArray(candidateNode.selectedFields) || !candidateNode.selectedFields.every((field) => typeof field === "string"))) return false;
+    if (candidateNode.conditions !== undefined && !Array.isArray(candidateNode.conditions)) return false;
+    if (candidateNode.filterExpression !== undefined && (!candidateNode.filterExpression || typeof candidateNode.filterExpression !== "object" || Array.isArray(candidateNode.filterExpression))) return false;
     return typeof candidateNode.id === "string"
       && typeof candidateNode.kind === "string"
       && validNodeKinds.has(candidateNode.kind as string)
@@ -1023,8 +1036,7 @@ function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
 }
 
 function readPersistedPipeline(): LoadedPipeline | null {
-  if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem(PIPELINE_STORAGE_KEY);
+  const raw = readPersistedPipelineRaw();
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -1043,7 +1055,7 @@ function readPersistedPipeline(): LoadedPipeline | null {
       edges: parsed.edges,
     };
   } catch {
-    localStorage.removeItem(PIPELINE_STORAGE_KEY);
+    clearPersistedPipeline();
     return null;
   }
 }
