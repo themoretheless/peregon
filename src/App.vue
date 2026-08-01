@@ -120,6 +120,15 @@ interface LoadedPipeline {
   edges: FlowEdge[];
 }
 
+interface InspectorPane {
+  content: string;
+  language: string;
+  emptyMessage: string;
+  itemCount?: number;
+  truncated?: boolean;
+  error?: string;
+}
+
 const SAMPLE_JSON = `{
   "stores": [
     {
@@ -256,6 +265,7 @@ const panX = ref(0);
 const panY = ref(0);
 const zoom = ref(0.8);
 const selectedNodeId = ref("");
+const inspectedNodeId = ref("");
 const connectingFrom = ref("");
 const connectionPreview = ref<{ x: number; y: number } | null>(null);
 const edgeVisuals = ref<EdgeVisual[]>([]);
@@ -287,9 +297,11 @@ const previewCache = new Map<string, CacheEntry<TransformResponse>>();
 
 type Gesture =
   | { type: "pan"; startX: number; startY: number; originX: number; originY: number }
-  | { type: "node"; nodeId: string; startX: number; startY: number; originX: number; originY: number }
+  | { type: "node"; nodeId: string; startX: number; startY: number; originX: number; originY: number; moved: boolean }
   | null;
 let gesture: Gesture = null;
+let suppressNodeClickId = "";
+let suppressNodeClickTimer: number | undefined;
 
 const zoomLabel = computed(() => `${Math.round(zoom.value * 100)}%`);
 const executionSignature = computed(() =>
@@ -353,6 +365,116 @@ function nodeDisplayMeta(node: FlowNode) {
 
 function nodeById(id: string) {
   return nodes.value.find((node) => node.id === id);
+}
+
+const inspectedNode = computed(() => nodeById(inspectedNodeId.value));
+
+function previewContent(result: ExecutePlanNodeResult | undefined) {
+  return result ? JSON.stringify(result.preview, null, 2) : "";
+}
+
+function resultError(result: ExecutePlanNodeResult | undefined) {
+  return result && !result.ok
+    ? result.diagnostics[0]?.message ?? "Блок не был выполнен"
+    : "";
+}
+
+function clearExecutionResults() {
+  executionResponse.value = null;
+  for (const nodeId of Object.keys(executionResults)) delete executionResults[nodeId];
+}
+
+function inspectorInputFor(node: FlowNode): InspectorPane {
+  if (node.kind === "source") {
+    return {
+      content: node.json ?? "",
+      language: node.sourceFormat ?? "json",
+      emptyMessage: "Исходные данные пусты",
+    };
+  }
+
+  const edge = incomingEdges(node.id)[0];
+  if (!edge) {
+    return {
+      content: "",
+      language: "json",
+      emptyMessage: "Вход не подключён",
+    };
+  }
+
+  const upstreamResult = executionResults[edge.from];
+  const ownResult = executionResults[node.id];
+  return {
+    content: upstreamResult?.ok ? previewContent(upstreamResult) : "",
+    language: "json",
+    emptyMessage: upstreamResult
+      ? "На входе нет строк"
+      : isRunning.value ? "Вычисляю вход…" : "Запустите граф, чтобы увидеть вход",
+    itemCount: ownResult?.stats.input_items ?? upstreamResult?.stats.output_items,
+    truncated: upstreamResult?.preview_truncated,
+    error: resultError(upstreamResult),
+  };
+}
+
+function inspectorOutputFor(node: FlowNode): InspectorPane {
+  const result = executionResults[node.id];
+  const error = resultError(result) || node.error || node.previewError || "";
+  if (node.kind === "output") {
+    return {
+      content: result?.ok ? node.output ?? "" : "",
+      language: node.outputFormat ?? "flat",
+      emptyMessage: result?.ok
+        ? "Результат пуст"
+        : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
+      itemCount: result?.stats.output_items,
+      error,
+    };
+  }
+
+  return {
+    content: result?.ok ? previewContent(result) : "",
+    language: "json",
+    emptyMessage: result?.ok
+      ? "На выходе нет строк"
+      : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
+    itemCount: result?.stats.output_items,
+    truncated: result?.preview_truncated,
+    error,
+  };
+}
+
+const inspectorInput = computed(() => inspectedNode.value
+  ? inspectorInputFor(inspectedNode.value)
+  : null);
+const inspectorOutput = computed(() => inspectedNode.value
+  ? inspectorOutputFor(inspectedNode.value)
+  : null);
+
+function inspectorHighlights(language: string) {
+  return language === "json" || language === "xml" || language === "sql";
+}
+
+function openNodeInspector(node: FlowNode) {
+  selectedNodeId.value = node.id;
+  inspectedNodeId.value = node.id;
+  closeContinuation();
+}
+
+function closeNodeInspector() {
+  inspectedNodeId.value = "";
+}
+
+function handleNodeCardClick(event: MouseEvent, node: FlowNode) {
+  if (suppressNodeClickId === node.id) return;
+  const target = event.target;
+  if (target instanceof Element) {
+    if (target.closest(
+      "button, input, select, a, label, [contenteditable='true'], .continuation-popover",
+    )) return;
+    const textarea = target.closest("textarea");
+    if (textarea && !textarea.readOnly) return;
+  }
+  openNodeInspector(node);
 }
 
 function graphV2Type(node: FlowNode): string {
@@ -586,6 +708,7 @@ function removeNode(id: string) {
   analysisCache.delete(id);
   outputCache.delete(id);
   if (selectedNodeId.value === id) selectedNodeId.value = "";
+  if (inspectedNodeId.value === id) closeNodeInspector();
   if (connectingFrom.value === id) connectingFrom.value = "";
   if (continuationFor.value === id) closeContinuation();
   scheduleRender();
@@ -730,6 +853,7 @@ function startNodeDrag(event: PointerEvent, node: FlowNode) {
     startY: event.clientY,
     originX: node.x,
     originY: node.y,
+    moved: false,
   };
   beginGesture();
 }
@@ -737,6 +861,7 @@ function startNodeDrag(event: PointerEvent, node: FlowNode) {
 function startPan(event: PointerEvent) {
   if (event.button !== 0 && event.button !== 1) return;
   selectedNodeId.value = "";
+  closeNodeInspector();
   closeContinuation();
   connectingFrom.value = "";
   gesture = {
@@ -762,17 +887,30 @@ function moveGesture(event: PointerEvent) {
   } else {
     const node = nodeById(gesture.nodeId);
     if (!node) return;
+    if (Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 4) {
+      gesture.moved = true;
+    }
     node.x = gesture.originX + (event.clientX - gesture.startX) / zoom.value;
     node.y = gesture.originY + (event.clientY - gesture.startY) / zoom.value;
   }
 }
 
 function endGesture() {
+  if (gesture?.type === "node" && gesture.moved) {
+    suppressNodeClickId = gesture.nodeId;
+    window.clearTimeout(suppressNodeClickTimer);
+    suppressNodeClickTimer = window.setTimeout(() => {
+      suppressNodeClickId = "";
+    }, 0);
+  }
   gesture = null;
   window.removeEventListener("pointermove", moveGesture);
+  window.removeEventListener("pointerup", endGesture);
 }
 
 function handleWheel(event: WheelEvent) {
+  const target = event.target;
+  if (target instanceof Element && target.closest(".node-result-output")) return;
   event.preventDefault();
   const bounds = board.value?.getBoundingClientRect();
   if (!bounds) return;
@@ -994,9 +1132,11 @@ async function loadPipelineFile(event: Event) {
     panY.value = pipeline.view.panY;
     zoom.value = pipeline.view.zoom;
     selectedNodeId.value = "";
+    closeNodeInspector();
     closeContinuation();
     cancelConnection(false);
     for (const key of Object.keys(analyses)) delete analyses[key];
+    clearExecutionResults();
     analysisCache.clear();
     outputCache.clear();
     nextNodeId = Math.max(1, ...pipeline.nodes.map((node) => Number(node.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
@@ -1168,6 +1308,7 @@ async function executeGraph() {
   if (!client) return;
   const token = ++executionToken;
   const startedAt = performance.now();
+  clearExecutionResults();
   isRunning.value = true;
   cachedBranches.value = 0;
 
@@ -1292,6 +1433,11 @@ function handleKeydown(event: KeyboardEvent) {
     closeContinuation();
     return;
   }
+  if (event.key === "Escape" && inspectedNodeId.value) {
+    event.preventDefault();
+    closeNodeInspector();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault();
     executeGraph();
@@ -1305,7 +1451,11 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 watch(geometrySignature, scheduleRender);
-watch(executionSignature, () => scheduleExecute());
+watch(executionSignature, () => {
+  executionToken += 1;
+  clearExecutionResults();
+  scheduleExecute();
+});
 
 onMounted(async () => {
   const savedTheme = localStorage.getItem("peregon-theme");
@@ -1332,6 +1482,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(noticeTimer);
   cancelAnimationFrame(renderFrame);
   endGesture();
+  window.clearTimeout(suppressNodeClickTimer);
   cancelConnection(false);
   resizeObserver?.disconnect();
   renderer?.destroy();
@@ -1488,6 +1639,7 @@ onBeforeUnmount(() => {
             '--node-color': nodeDisplayMeta(node).color,
           }"
           @pointerdown.stop="selectedNodeId = node.id"
+          @click.stop="handleNodeCardClick($event, node)"
         >
           <button
             v-if="node.kind !== 'source'"
@@ -1506,6 +1658,14 @@ onBeforeUnmount(() => {
               <small>{{ nodeDisplayMeta(node).eyebrow }}</small>
               <input v-model="node.title" aria-label="Название блока" @pointerdown.stop />
             </div>
+            <button
+              type="button"
+              class="node-inspect"
+              :aria-label="`Показать вход и выход блока ${node.title}`"
+              title="Вход / выход"
+              @pointerdown.stop
+              @click.stop="openNodeInspector(node)"
+            >↗</button>
             <button
               type="button"
               class="node-delete"
@@ -1780,6 +1940,80 @@ onBeforeUnmount(() => {
           ></button>
         </article>
       </div>
+
+      <aside
+        v-if="inspectedNode && inspectorInput && inspectorOutput"
+        class="node-inspector"
+        :style="{ '--node-color': nodeDisplayMeta(inspectedNode).color }"
+        :aria-labelledby="`node-inspector-title-${inspectedNode.id}`"
+        @pointerdown.stop
+        @wheel.stop
+      >
+        <header class="node-inspector-heading">
+          <span class="node-icon">{{ nodeDisplayMeta(inspectedNode).icon }}</span>
+          <div>
+            <small>{{ nodeDisplayMeta(inspectedNode).eyebrow }} · вход / выход</small>
+            <strong :id="`node-inspector-title-${inspectedNode.id}`">{{ inspectedNode.title }}</strong>
+          </div>
+          <button type="button" aria-label="Закрыть просмотр входа и выхода" @click="closeNodeInspector">×</button>
+        </header>
+
+        <div class="node-inspector-body">
+          <section class="node-inspector-pane">
+            <div class="node-inspector-pane-heading">
+              <div>
+                <span>Вход</span>
+                <small>{{ inspectorInput.language.toUpperCase() }}</small>
+              </div>
+              <div class="node-inspector-badges">
+                <small v-if="inspectorInput.itemCount !== undefined">{{ inspectorInput.itemCount }} строк</small>
+                <small v-if="inspectorInput.truncated" class="is-truncated">первые 50</small>
+              </div>
+            </div>
+            <JsonCodeEditor
+              v-if="inspectorInput.content"
+              class="node-inspector-code"
+              :model-value="inspectorInput.content"
+              :language="inspectorInput.language"
+              :highlight-syntax="inspectorHighlights(inspectorInput.language)"
+              readonly
+              :label="`Вход блока ${inspectedNode.title}`"
+            />
+            <div v-else class="node-inspector-empty" :class="{ 'is-error': inspectorInput.error }">
+              {{ inspectorInput.error || inspectorInput.emptyMessage }}
+            </div>
+          </section>
+
+          <section class="node-inspector-pane">
+            <div class="node-inspector-pane-heading">
+              <div>
+                <span>Выход · результат</span>
+                <small>{{ inspectorOutput.language.toUpperCase() }}</small>
+              </div>
+              <div class="node-inspector-badges">
+                <small v-if="inspectorOutput.itemCount !== undefined">{{ inspectorOutput.itemCount }} строк</small>
+                <small v-if="inspectorOutput.truncated" class="is-truncated">первые 50</small>
+              </div>
+            </div>
+            <JsonCodeEditor
+              v-if="inspectorOutput.content"
+              class="node-inspector-code"
+              :model-value="inspectorOutput.content"
+              :language="inspectorOutput.language"
+              :highlight-syntax="inspectorHighlights(inspectorOutput.language)"
+              readonly
+              :label="`Выход блока ${inspectedNode.title}`"
+            />
+            <div v-else class="node-inspector-empty" :class="{ 'is-error': inspectorOutput.error }">
+              {{ inspectorOutput.error || inspectorOutput.emptyMessage }}
+            </div>
+          </section>
+        </div>
+
+        <footer class="node-inspector-note">
+          Промежуточные данные показываются превью до 50 строк; итоговый выход — полностью.
+        </footer>
+      </aside>
 
       <div class="canvas-status" aria-live="polite" @pointerdown.stop>
         <span :class="{ pulse: connectingFrom }"></span>
