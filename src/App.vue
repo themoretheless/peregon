@@ -985,7 +985,7 @@ function createPipelineV2(): PipelineFileV2 {
 }
 
 function persistCurrentPipeline() {
-  if (typeof window === "undefined" || isRunning.value) return;
+  if (typeof window === "undefined") return;
   const snapshot = {
     version: 1,
     title: normalizePipelineTitle(pipelineTitle.value),
@@ -1078,7 +1078,7 @@ function applyLoadedPipeline(pipeline: LoadedPipeline, options: { preserveSelect
   previewCache.clear();
   nextNodeId = Math.max(1, ...pipeline.nodes.map((node) => Number(node.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
   nextEdgeId = Math.max(1, ...pipeline.edges.map((edge) => Number(edge.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
-  nextConditionId = Math.max(1, ...pipeline.nodes.flatMap((node) => node.conditions?.map((condition) => condition.id) ?? [])) + 1;
+  nextConditionId = Math.max(1, ...pipeline.nodes.flatMap((node) => Array.isArray(node.conditions) ? node.conditions.map((condition) => condition.id) : [])) + 1;
   scheduleRender();
   if (run) scheduleExecute(true);
   if (noticeMessage) setNotice(noticeMessage);
