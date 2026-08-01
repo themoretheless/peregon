@@ -22,7 +22,7 @@ test("client build exposes project and direct package versions", async () => {
   const script = await readFile(`dist/client/assets/${scriptName}`, "utf8");
   for (const expected of [
     "peregon",
-    "1.0.0",
+    "1.0.1",
     "@peregon/syntax-engine",
     "vue",
     "peregon_engine",
