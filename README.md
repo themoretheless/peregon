@@ -14,6 +14,7 @@ and output transformations into JSON, CSV, XML, SQL, or plain-text lists.
 - empty-value skipping and deduplication;
 - CSV-compatible value escaping;
 - result copying and downloading;
+- local auto-save for the current pipeline and quick presets for common workflows;
 - processing in a dedicated Web Worker, so data never leaves the browser;
 - a custom incremental syntax engine with no external editor dependency,
   supporting C#, Rust, JavaScript, TypeScript, Python, SQL, JSON, XML, YAML,

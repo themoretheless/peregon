@@ -115,10 +115,13 @@ interface BlockDefinition {
 }
 
 interface LoadedPipeline {
+  title?: string;
   view: { panX: number; panY: number; zoom: number };
   nodes: FlowNode[];
   edges: FlowEdge[];
 }
+
+const PIPELINE_STORAGE_KEY = "peregon-pipeline-state-v1";
 
 const SAMPLE_JSON = `{
   "stores": [
@@ -201,51 +204,109 @@ const FILTER_OPERATORS: Array<{ value: FilterOperator; label: string }> = [
   { value: "not_exists", label: "отсутствует" },
 ];
 
-const nodes = ref<FlowNode[]>([
-  { id: "source-1", kind: "source", title: "Данные магазинов", x: 80, y: 190, json: SAMPLE_JSON, sourceFormat: "json", csvDelimiter: "," },
-  {
-    id: "fields-1",
-    kind: "fields",
-    title: "Выбрать поля",
-    x: 865,
-    y: 135,
-    selectedPath: "/stores",
-    selectedFields: ["name"],
-  },
-  {
-    id: "condition-1",
-    kind: "condition",
-    title: "Только активные",
-    x: 480,
-    y: 115,
-    filterMode: "all",
-    conditions: [{ id: 1, field: "state", operator: "equal", value: "1" }],
-    filterExpression: createUiFilterGroup("and", "state"),
-  },
-  {
-    id: "output-1",
-    kind: "output",
-    title: "Плоский список",
-    x: 1280,
-    y: 180,
-    delimiter: ", ",
-    csvDelimiter: ",",
-    csvIncludeHeader: true,
-    csvQuoteAll: false,
-    outputFormat: "flat",
-    xmlRoot: "rows",
-    xmlRow: "row",
-    tableName: "stores",
-    output: "",
-    stats: null,
-  },
-]);
+function createPresetPipeline(title: string, sourceFormat: SourceFormat, sourceText: string, outputFormat: OutputFormat): LoadedPipeline {
+  return {
+    title,
+    view: { panX: 0, panY: 0, zoom: 0.8 },
+    nodes: [
+      {
+        id: "source-1",
+        kind: "source",
+        title: sourceFormat === "csv" ? "CSV-данные" : "Данные магазинов",
+        x: 80,
+        y: 190,
+        json: sourceText,
+        sourceFormat,
+        csvDelimiter: ",",
+      },
+      {
+        id: "fields-1",
+        kind: "fields",
+        title: "Выбрать поля",
+        x: 865,
+        y: 135,
+        selectedPath: "/stores",
+        selectedFields: ["name"],
+      },
+      {
+        id: "condition-1",
+        kind: "condition",
+        title: "Только активные",
+        x: 480,
+        y: 115,
+        filterMode: "all",
+        conditions: [{ id: 1, field: "state", operator: "equal", value: "1" }],
+        filterExpression: createUiFilterGroup("and", "state"),
+      },
+      {
+        id: "output-1",
+        kind: "output",
+        title: outputFormat === "json" ? "JSON результат" : "Плоский список",
+        x: 1280,
+        y: 180,
+        delimiter: ", ",
+        csvDelimiter: ",",
+        csvIncludeHeader: true,
+        csvQuoteAll: false,
+        outputFormat,
+        xmlRoot: "rows",
+        xmlRow: "row",
+        tableName: "stores",
+        output: "",
+        stats: null,
+      },
+    ],
+    edges: [
+      { id: "edge-1", from: "source-1", to: "condition-1" },
+      { id: "edge-2", from: "condition-1", to: "fields-1" },
+      { id: "edge-3", from: "fields-1", to: "output-1" },
+    ],
+  };
+}
 
-const edges = ref<FlowEdge[]>([
-  { id: "edge-1", from: "source-1", to: "condition-1" },
-  { id: "edge-2", from: "condition-1", to: "fields-1" },
-  { id: "edge-3", from: "fields-1", to: "output-1" },
-]);
+function createEmptyPipeline(title: string): LoadedPipeline {
+  return {
+    title,
+    view: { panX: 0, panY: 0, zoom: 0.8 },
+    nodes: [{
+      id: "source-1",
+      kind: "source",
+      title: "Новые данные",
+      x: 80,
+      y: 190,
+      json: "[]",
+      sourceFormat: "json",
+      csvDelimiter: ",",
+    }],
+    edges: [],
+  };
+}
+
+const PIPELINE_PRESETS = [
+  {
+    id: "stores",
+    title: "Магазины",
+    description: "JSON + фильтр + плоский список",
+    build: () => createPresetPipeline("Обработка магазинов", "json", SAMPLE_JSON, "flat"),
+  },
+  {
+    id: "csv-active",
+    title: "CSV активных",
+    description: "CSV + поля + JSON-выход",
+    build: () => createPresetPipeline("CSV активных", "csv", SAMPLE_CSV, "json"),
+  },
+  {
+    id: "blank",
+    title: "Пустой холст",
+    description: "Начать с нуля",
+    build: () => createEmptyPipeline("Пустой холст"),
+  },
+];
+
+const initialPipeline = createPresetPipeline("Обработка магазинов", "json", SAMPLE_JSON, "flat");
+const nodes = ref<FlowNode[]>(initialPipeline.nodes);
+const edges = ref<FlowEdge[]>(initialPipeline.edges);
+const pipelineTitle = ref(initialPipeline.title ?? "Обработка магазинов");
 
 const analyses = reactive<Record<string, AnalyzeSuccess | undefined>>({});
 const executionResults = reactive<Record<string, ExecutePlanNodeResult | undefined>>({});
@@ -325,6 +386,11 @@ const geometrySignature = computed(() =>
     edges: edges.value,
   }),
 );
+const persistSignature = computed(() => JSON.stringify({
+  title: pipelineTitle.value,
+  execution: executionSignature.value,
+  geometry: geometrySignature.value,
+}));
 
 function applyTheme(nextTheme: Theme) {
   theme.value = nextTheme;
@@ -858,13 +924,50 @@ function pipelineNodeConfig(node: FlowNode): Record<string, import("./graph-v2")
   };
 }
 
+function normalizePipelineTitle(value: unknown): string {
+  if (typeof value !== "string") return "Обработка магазинов";
+  const trimmed = value.trim();
+  return trimmed || "Обработка магазинов";
+}
+
+function sanitizePersistedNode(node: FlowNode): FlowNode {
+  const {
+    output: _output,
+    stats: _stats,
+    preview: _preview,
+    previewStats: _previewStats,
+    previewError: _previewError,
+    error: _error,
+    ...rest
+  } = node;
+  return rest as FlowNode;
+}
+
+function clearPersistedPipeline() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(PIPELINE_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors so auto-save failures stay best-effort.
+  }
+}
+
+function readPersistedPipelineRaw(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(PIPELINE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function createPipelineV2(): PipelineFileV2 {
   const graph = toGraphV2();
   return {
     format: PIPELINE_FORMAT,
     version: 2,
     savedAt: new Date().toISOString(),
-    metadata: { name: "Обработка магазинов" },
+    metadata: { name: normalizePipelineTitle(pipelineTitle.value) },
     view: {
       x: panX.value,
       y: panY.value,
@@ -879,6 +982,122 @@ function createPipelineV2(): PipelineFileV2 {
       }),
     },
   };
+}
+
+function persistCurrentPipeline() {
+  if (typeof window === "undefined") return;
+  const snapshot = {
+    version: 1,
+    title: normalizePipelineTitle(pipelineTitle.value),
+    view: { panX: panX.value, panY: panY.value, zoom: zoom.value },
+    nodes: nodes.value.map(sanitizePersistedNode),
+    edges: edges.value,
+  };
+  try {
+    localStorage.setItem(PIPELINE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    clearPersistedPipeline();
+  }
+}
+
+function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.version !== 1) return false;
+  if (typeof candidate.title !== "undefined" && typeof candidate.title !== "string") return false;
+  if (!candidate.view || typeof candidate.view !== "object" || Array.isArray(candidate.view)) return false;
+  const view = candidate.view as Record<string, unknown>;
+  if (typeof view.panX !== "number" || typeof view.panY !== "number" || typeof view.zoom !== "number"
+    || !Number.isFinite(view.panX) || !Number.isFinite(view.panY) || !Number.isFinite(view.zoom)) return false;
+  if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.edges)) return false;
+  const validNodeKinds = new Set(["source", "fields", "condition", "output"]);
+  return candidate.nodes.every((node) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+    const candidateNode = node as Record<string, unknown>;
+    if (candidateNode.selectedPath !== undefined && typeof candidateNode.selectedPath !== "string") return false;
+    if (candidateNode.selectedFields !== undefined && (!Array.isArray(candidateNode.selectedFields) || !candidateNode.selectedFields.every((field) => typeof field === "string"))) return false;
+    if (candidateNode.conditions !== undefined && !Array.isArray(candidateNode.conditions)) return false;
+    if (candidateNode.filterExpression !== undefined && (!candidateNode.filterExpression || typeof candidateNode.filterExpression !== "object" || Array.isArray(candidateNode.filterExpression))) return false;
+    return typeof candidateNode.id === "string"
+      && typeof candidateNode.kind === "string"
+      && validNodeKinds.has(candidateNode.kind as string)
+      && typeof candidateNode.title === "string"
+      && typeof candidateNode.x === "number"
+      && typeof candidateNode.y === "number"
+      && Number.isFinite(candidateNode.x)
+      && Number.isFinite(candidateNode.y);
+  }) && candidate.edges.every((edge) => {
+    if (!edge || typeof edge !== "object" || Array.isArray(edge)) return false;
+    const candidateEdge = edge as Record<string, unknown>;
+    return typeof candidateEdge.id === "string"
+      && typeof candidateEdge.from === "string"
+      && typeof candidateEdge.to === "string";
+  });
+}
+
+function readPersistedPipeline(): LoadedPipeline | null {
+  const raw = readPersistedPipelineRaw();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isValidStoredPipeline(parsed)) {
+      clearPersistedPipeline();
+      return null;
+    }
+    return {
+      title: normalizePipelineTitle(parsed.title),
+      view: {
+        panX: parsed.view.panX,
+        panY: parsed.view.panY,
+        zoom: parsed.view.zoom,
+      },
+      nodes: parsed.nodes,
+      edges: parsed.edges,
+    };
+  } catch {
+    clearPersistedPipeline();
+    return null;
+  }
+}
+
+function applyLoadedPipeline(pipeline: LoadedPipeline, options: { preserveSelection?: boolean; run?: boolean; noticeMessage?: string } = {}) {
+  const { preserveSelection = false, run = true, noticeMessage } = options;
+  executionToken += 1;
+  nodes.value = pipeline.nodes;
+  edges.value = pipeline.edges;
+  panX.value = pipeline.view.panX;
+  panY.value = pipeline.view.panY;
+  zoom.value = pipeline.view.zoom;
+  pipelineTitle.value = normalizePipelineTitle(pipeline.title);
+  if (!preserveSelection) selectedNodeId.value = "";
+  closeContinuation();
+  cancelConnection(false);
+  for (const key of Object.keys(analyses)) delete analyses[key];
+  analysisCache.clear();
+  outputCache.clear();
+  previewCache.clear();
+  nextNodeId = Math.max(1, ...pipeline.nodes.map((node) => Number(node.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
+  nextEdgeId = Math.max(1, ...pipeline.edges.map((edge) => Number(edge.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
+  nextConditionId = Math.max(1, ...pipeline.nodes.flatMap((node) => Array.isArray(node.conditions) ? node.conditions.map((condition) => condition.id) : [])) + 1;
+  scheduleRender();
+  if (run) scheduleExecute(true);
+  if (noticeMessage) setNotice(noticeMessage);
+}
+
+function applyPreset(presetId: string) {
+  const preset = PIPELINE_PRESETS.find((candidate) => candidate.id === presetId);
+  if (!preset) return;
+  const pipeline = preset.build();
+  applyLoadedPipeline(pipeline, { noticeMessage: `Пресет «${preset.title}» загружен` });
+  persistCurrentPipeline();
+}
+
+let persistTimer: number | undefined;
+function schedulePersist() {
+  window.clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    persistCurrentPipeline();
+  }, 300);
 }
 
 function savePipelineFile() {
@@ -921,6 +1140,9 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
     ? (value as Record<string, unknown>).version
     : undefined;
   const pipeline = migratePipelineFile(rawVersion === 2 ? decodePipelineV2(value) : value);
+  const title = typeof (pipeline as { metadata?: { name?: unknown } }).metadata?.name === "string"
+    ? (pipeline as { metadata?: { name?: string } }).metadata?.name
+    : undefined;
   const importedNodes: FlowNode[] = pipeline.graph.nodes.map((graphNode): FlowNode => {
     const config = graphNode.config;
     const kind: NodeKind = graphNode.type.startsWith("source.")
@@ -970,6 +1192,7 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
     return imported;
   });
   return {
+    title,
     view: { panX: pipeline.view.x, panY: pipeline.view.y, zoom: pipeline.view.zoom },
     nodes: importedNodes,
     edges: pipeline.graph.connections.map((connection) => ({
@@ -987,25 +1210,9 @@ async function loadPipelineFile(event: Event) {
   try {
     if (file.size > 10 * 1024 * 1024) throw new Error("Файл больше 10 МБ");
     const pipeline = parsePipelineFile(JSON.parse(await file.text()));
-    executionToken += 1;
-    nodes.value = pipeline.nodes;
-    edges.value = pipeline.edges;
-    panX.value = pipeline.view.panX;
-    panY.value = pipeline.view.panY;
-    zoom.value = pipeline.view.zoom;
-    selectedNodeId.value = "";
-    closeContinuation();
-    cancelConnection(false);
-    for (const key of Object.keys(analyses)) delete analyses[key];
-    analysisCache.clear();
-    outputCache.clear();
-    nextNodeId = Math.max(1, ...pipeline.nodes.map((node) => Number(node.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
-    nextEdgeId = Math.max(1, ...pipeline.edges.map((edge) => Number(edge.id.match(/(\d+)$/)?.[1] ?? 0))) + 1;
-    nextConditionId = Math.max(1, ...pipeline.nodes.flatMap((node) => node.conditions?.map((condition) => condition.id) ?? [])) + 1;
+    applyLoadedPipeline(pipeline, { noticeMessage: `Загружено: ${pipeline.nodes.length} блоков, ${pipeline.edges.length} связей` });
     await nextTick();
-    scheduleRender();
-    scheduleExecute(true);
-    setNotice(`Загружено: ${pipeline.nodes.length} блоков, ${pipeline.edges.length} связей`);
+    persistCurrentPipeline();
   } catch (error) {
     setNotice(error instanceof Error ? error.message : "Не удалось загрузить файл");
   } finally {
@@ -1306,6 +1513,9 @@ function handleKeydown(event: KeyboardEvent) {
 
 watch(geometrySignature, scheduleRender);
 watch(executionSignature, () => scheduleExecute());
+watch(persistSignature, () => {
+  schedulePersist();
+});
 
 onMounted(async () => {
   const savedTheme = localStorage.getItem("peregon-theme");
@@ -1321,7 +1531,13 @@ onMounted(async () => {
   if (board.value) resizeObserver.observe(board.value);
   window.addEventListener("keydown", handleKeydown);
   await nextTick();
-  fitView();
+  const persisted = readPersistedPipeline();
+  if (persisted) {
+    applyLoadedPipeline(persisted, { preserveSelection: true, run: false, noticeMessage: "Восстановлено локальное состояние" });
+  } else {
+    fitView();
+  }
+  persistCurrentPipeline();
   scheduleExecute(true);
   scheduleRender();
 });
@@ -1330,6 +1546,7 @@ onBeforeUnmount(() => {
   executionToken += 1;
   window.clearTimeout(executeTimer);
   window.clearTimeout(noticeTimer);
+  window.clearTimeout(persistTimer);
   cancelAnimationFrame(renderFrame);
   endGesture();
   cancelConnection(false);
@@ -1373,7 +1590,7 @@ onBeforeUnmount(() => {
 
       <div class="flow-document-title">
         <span class="save-dot"></span>
-        <strong>Обработка магазинов</strong>
+        <strong>{{ pipelineTitle }}</strong>
         <small>{{ nodes.length }} блоков · {{ edges.length }} связей</small>
       </div>
 
@@ -1449,6 +1666,21 @@ onBeforeUnmount(() => {
         <div class="library-heading">
           <span>Блоки</span>
           <strong>Добавить на холст</strong>
+        </div>
+        <div class="library-presets" role="group" aria-label="Пресеты схемы">
+          <span>Пресеты</span>
+          <div class="preset-list">
+            <button
+              v-for="preset in PIPELINE_PRESETS"
+              :key="preset.id"
+              type="button"
+              class="preset-pill"
+              @click="applyPreset(preset.id)"
+            >
+              <strong>{{ preset.title }}</strong>
+              <small>{{ preset.description }}</small>
+            </button>
+          </div>
         </div>
         <div class="library-list">
           <button
