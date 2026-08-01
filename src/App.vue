@@ -386,6 +386,11 @@ const geometrySignature = computed(() =>
     edges: edges.value,
   }),
 );
+const persistSignature = computed(() => JSON.stringify({
+  title: pipelineTitle.value,
+  execution: executionSignature.value,
+  geometry: geometrySignature.value,
+}));
 
 function applyTheme(nextTheme: Theme) {
   theme.value = nextTheme;
@@ -986,8 +991,23 @@ function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
   const view = candidate.view as Record<string, unknown>;
   if (typeof view.panX !== "number" || typeof view.panY !== "number" || typeof view.zoom !== "number") return false;
   if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.edges)) return false;
-  return candidate.nodes.every((node) => node && typeof node === "object" && !Array.isArray(node) && typeof (node as Record<string, unknown>).id === "string")
-    && candidate.edges.every((edge) => edge && typeof edge === "object" && !Array.isArray(edge) && typeof (edge as Record<string, unknown>).id === "string" && typeof (edge as Record<string, unknown>).from === "string" && typeof (edge as Record<string, unknown>).to === "string");
+  const validNodeKinds = new Set(["source", "fields", "condition", "output"]);
+  return candidate.nodes.every((node) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+    const candidateNode = node as Record<string, unknown>;
+    return typeof candidateNode.id === "string"
+      && typeof candidateNode.kind === "string"
+      && validNodeKinds.has(candidateNode.kind as string)
+      && typeof candidateNode.title === "string"
+      && typeof candidateNode.x === "number"
+      && typeof candidateNode.y === "number";
+  }) && candidate.edges.every((edge) => {
+    if (!edge || typeof edge !== "object" || Array.isArray(edge)) return false;
+    const candidateEdge = edge as Record<string, unknown>;
+    return typeof candidateEdge.id === "string"
+      && typeof candidateEdge.from === "string"
+      && typeof candidateEdge.to === "string";
+  });
 }
 
 function readPersistedPipeline(): LoadedPipeline | null {
@@ -1469,9 +1489,9 @@ function handleKeydown(event: KeyboardEvent) {
 
 watch(geometrySignature, scheduleRender);
 watch(executionSignature, () => scheduleExecute());
-watch([nodes, edges, panX, panY, zoom, pipelineTitle], () => {
+watch(persistSignature, () => {
   schedulePersist();
-}, { deep: true });
+});
 
 onMounted(async () => {
   const savedTheme = localStorage.getItem("peregon-theme");
