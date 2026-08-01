@@ -15,6 +15,9 @@ test("Sites build contains the Vue client and Worker entry", async () => {
 });
 
 test("client build exposes project and direct package versions", async () => {
+  const { version: projectVersion } = JSON.parse(
+    await readFile("package.json", "utf8"),
+  );
   const assetNames = await readdir("dist/client/assets");
   const scriptName = assetNames.find((name) => /^index-.*\.js$/.test(name));
   assert.ok(scriptName, "client entry script is missing");
@@ -22,7 +25,7 @@ test("client build exposes project and direct package versions", async () => {
   const script = await readFile(`dist/client/assets/${scriptName}`, "utf8");
   for (const expected of [
     "peregon",
-    "1.0.1",
+    projectVersion,
     "@peregon/syntax-engine",
     "vue",
     "peregon_engine",
