@@ -919,13 +919,32 @@ function pipelineNodeConfig(node: FlowNode): Record<string, import("./graph-v2")
   };
 }
 
+function normalizePipelineTitle(value: unknown): string {
+  if (typeof value !== "string") return "Обработка магазинов";
+  const trimmed = value.trim();
+  return trimmed || "Обработка магазинов";
+}
+
+function sanitizePersistedNode(node: FlowNode): FlowNode {
+  const {
+    output: _output,
+    stats: _stats,
+    preview: _preview,
+    previewStats: _previewStats,
+    previewError: _previewError,
+    error: _error,
+    ...rest
+  } = node;
+  return rest as FlowNode;
+}
+
 function createPipelineV2(): PipelineFileV2 {
   const graph = toGraphV2();
   return {
     format: PIPELINE_FORMAT,
     version: 2,
     savedAt: new Date().toISOString(),
-    metadata: { name: pipelineTitle.value },
+    metadata: { name: normalizePipelineTitle(pipelineTitle.value) },
     view: {
       x: panX.value,
       y: panY.value,
@@ -943,15 +962,19 @@ function createPipelineV2(): PipelineFileV2 {
 }
 
 function persistCurrentPipeline() {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || isRunning.value) return;
   const snapshot = {
     version: 1,
-    title: pipelineTitle.value,
+    title: normalizePipelineTitle(pipelineTitle.value),
     view: { panX: panX.value, panY: panY.value, zoom: zoom.value },
-    nodes: nodes.value,
+    nodes: nodes.value.map(sanitizePersistedNode),
     edges: edges.value,
   };
-  localStorage.setItem(PIPELINE_STORAGE_KEY, JSON.stringify(snapshot));
+  try {
+    localStorage.setItem(PIPELINE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    localStorage.removeItem(PIPELINE_STORAGE_KEY);
+  }
 }
 
 function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
@@ -978,7 +1001,7 @@ function readPersistedPipeline(): LoadedPipeline | null {
       return null;
     }
     return {
-      title: typeof parsed.title === "string" ? parsed.title : "Обработка магазинов",
+      title: normalizePipelineTitle(parsed.title),
       view: {
         panX: parsed.view.panX,
         panY: parsed.view.panY,
@@ -1001,7 +1024,7 @@ function applyLoadedPipeline(pipeline: LoadedPipeline, options: { preserveSelect
   panX.value = pipeline.view.panX;
   panY.value = pipeline.view.panY;
   zoom.value = pipeline.view.zoom;
-  pipelineTitle.value = pipeline.title ?? "Обработка магазинов";
+  pipelineTitle.value = normalizePipelineTitle(pipeline.title);
   if (!preserveSelection) selectedNodeId.value = "";
   closeContinuation();
   cancelConnection(false);
