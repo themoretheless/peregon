@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 test("Sites build contains the Vue client and Worker entry", async () => {
@@ -12,4 +12,22 @@ test("Sites build contains the Vue client and Worker entry", async () => {
   const html = await readFile("dist/client/index.html", "utf8");
   assert.match(html, /Peregon/);
   assert.match(html, /assets\//);
+});
+
+test("client build exposes project and direct package versions", async () => {
+  const assetNames = await readdir("dist/client/assets");
+  const scriptName = assetNames.find((name) => /^index-.*\.js$/.test(name));
+  assert.ok(scriptName, "client entry script is missing");
+
+  const script = await readFile(`dist/client/assets/${scriptName}`, "utf8");
+  for (const expected of [
+    "peregon",
+    "1.0.0",
+    "@peregon/syntax-engine",
+    "vue",
+    "peregon_engine",
+    "themoretheless-tokenizer",
+  ]) {
+    assert.match(script, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
