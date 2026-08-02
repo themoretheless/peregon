@@ -34,6 +34,7 @@ export type PlanFilterOperator =
 
 export interface PlanFilterCondition {
   readonly field: string;
+  readonly quantifier?: "one" | "any" | "all" | "none";
   readonly operator: PlanFilterOperator;
   readonly value?: string;
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { FilterOperator } from "../engine/types.ts";
 import type { ExecutePlanFieldSchema } from "../runtime/execute-plan.ts";
+import type { FilterQuantifier } from "../runtime/filter-expression.ts";
 import {
   createUiCondition,
   createUiFilterGroup,
@@ -79,6 +80,13 @@ function addNot() {
 function needsValue(operator: FilterOperator) {
   return operator !== "exists" && operator !== "not_exists";
 }
+
+const quantifiers: readonly { value: FilterQuantifier; label: string }[] = [
+  { value: "one", label: "одно" },
+  { value: "any", label: "любое" },
+  { value: "all", label: "все" },
+  { value: "none", label: "ни одного" },
+];
 </script>
 
 <template>
@@ -128,14 +136,31 @@ function needsValue(operator: FilterOperator) {
 
     <template v-else>
       <span class="filter-expression-index">{{ depth }}</span>
-      <select :value="modelValue.field" aria-label="Поле условия" @change="updateCondition({ field: ($event.target as HTMLSelectElement).value })">
-        <option v-for="field in fields" :key="field.name" :value="field.name">{{ field.name }}</option>
+      <input
+        class="filter-path"
+        :value="modelValue.field"
+        :list="`filter-fields-${modelValue.id}`"
+        aria-label="Путь поля условия"
+        placeholder="profile.age или tags[*]"
+        @input="updateCondition({ field: ($event.target as HTMLInputElement).value })"
+      />
+      <datalist :id="`filter-fields-${modelValue.id}`">
+        <option v-for="field in fields" :key="field.name" :value="field.name" />
+      </datalist>
+      <select
+        class="filter-quantifier"
+        :value="modelValue.quantifier"
+        aria-label="Квантор значений пути"
+        @change="updateCondition({ quantifier: ($event.target as HTMLSelectElement).value as FilterQuantifier })"
+      >
+        <option v-for="quantifier in quantifiers" :key="quantifier.value" :value="quantifier.value">{{ quantifier.label }}</option>
       </select>
-      <select :value="modelValue.operator" aria-label="Оператор условия" @change="updateCondition({ operator: ($event.target as HTMLSelectElement).value as FilterOperator })">
+      <select class="filter-operator" :value="modelValue.operator" aria-label="Оператор условия" @change="updateCondition({ operator: ($event.target as HTMLSelectElement).value as FilterOperator })">
         <option v-for="operator in operators" :key="operator.value" :value="operator.value">{{ operator.label }}</option>
       </select>
       <input
         v-if="needsValue(modelValue.operator)"
+        class="filter-value"
         :value="modelValue.value"
         aria-label="Значение условия"
         placeholder="значение"
