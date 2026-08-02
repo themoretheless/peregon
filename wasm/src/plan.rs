@@ -1,6 +1,6 @@
 use super::{
-    array_info, format_csv, format_flat, format_json, format_sql, format_xml, matches_condition,
-    matches_filters, parse_input, FilterCondition, FilterMode, FilterOperator, SourceFormat,
+    array_info, format_csv, format_flat, format_json, format_sql, format_xml, matches_filters,
+    matches_value, parse_input, FilterCondition, FilterMode, FilterOperator, SourceFormat,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -12,6 +12,8 @@ const DEFAULT_PREVIEW_LIMIT: usize = 20;
 const MAX_PREVIEW_LIMIT: usize = 100;
 const MAX_EXPRESSION_DEPTH: usize = 32;
 const MAX_EXPRESSION_NODES: usize = 256;
+const MAX_FILTER_PATH_SEGMENTS: usize = 64;
+const MAX_FILTER_PATH_VALUES: usize = 4096;
 const MAX_CACHE_ENTRIES: usize = 128;
 const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CACHE_KEY_LENGTH: usize = 512;
@@ -101,6 +103,8 @@ struct FilterConfig {
 enum FilterExpression {
     Condition {
         field: String,
+        #[serde(default)]
+        quantifier: FilterQuantifier,
         operator: FilterOperator,
         #[serde(default)]
         value: String,
@@ -119,6 +123,24 @@ enum FilterExpression {
 enum FilterGroupOperator {
     And,
     Or,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum FilterQuantifier {
+    #[default]
+    One,
+    Any,
+    All,
+    None,
+}
+
+#[derive(Debug)]
+enum FilterPathSegment {
+    Root,
+    Key(String),
+    Index(usize),
+    Wildcard,
 }
 
 #[derive(Debug, Deserialize)]
@@ -537,13 +559,9 @@ fn execute_filter(
 
     let mut output = Vec::new();
     let mut filtered_out = 0usize;
-    let mut skipped_items = 0usize;
+    let skipped_items = 0usize;
     for item in input {
-        let Value::Object(object) = item else {
-            skipped_items += 1;
-            continue;
-        };
-        if config.matches(object) {
+        if config.matches(item) {
             output.push(item.clone());
         } else {
             filtered_out += 1;
@@ -598,7 +616,17 @@ fn validate_expression(
 
     match expression {
         FilterExpression::Condition { field, .. } => {
-            if !available.contains(field.as_str()) {
+            let segments = parse_filter_path(field).map_err(|message| ExpressionProblem {
+                code: "invalid_filter_path",
+                message,
+                path: format!("{path}.field"),
+            })?;
+            let root_field = segments.iter().find_map(|segment| match segment {
+                FilterPathSegment::Root => None,
+                FilterPathSegment::Key(key) => Some(key.as_str()),
+                FilterPathSegment::Index(_) | FilterPathSegment::Wildcard => None,
+            });
+            if root_field.is_some_and(|field| !available.contains(field)) {
                 return Err(ExpressionProblem {
                     code: "field_not_in_input_schema",
                     message: format!("Поле условия «{field}» отсутствует во входе этого узла"),
@@ -632,35 +660,187 @@ fn validate_expression(
 }
 
 impl FilterConfig {
-    fn matches(&self, object: &Map<String, Value>) -> bool {
+    fn matches(&self, item: &Value) -> bool {
         match &self.expression {
-            Some(expression) => expression.matches(object),
-            None => matches_filters(object, &self.filters, self.filter_mode),
+            Some(expression) => expression.matches(item),
+            None => item
+                .as_object()
+                .is_some_and(|object| matches_filters(object, &self.filters, self.filter_mode)),
         }
     }
 }
 
 impl FilterExpression {
-    fn matches(&self, object: &Map<String, Value>) -> bool {
+    fn matches(&self, item: &Value) -> bool {
         match self {
             Self::Condition {
                 field,
+                quantifier,
                 operator,
                 value,
-            } => matches_condition(
-                object,
-                &FilterCondition {
-                    field: field.clone(),
-                    operator: *operator,
-                    value: value.clone(),
-                },
-            ),
+            } => matches_path_condition(item, field, *quantifier, *operator, value),
             Self::Group { operator, children } => match operator {
-                FilterGroupOperator::And => children.iter().all(|child| child.matches(object)),
-                FilterGroupOperator::Or => children.iter().any(|child| child.matches(object)),
+                FilterGroupOperator::And => children.iter().all(|child| child.matches(item)),
+                FilterGroupOperator::Or => children.iter().any(|child| child.matches(item)),
             },
-            Self::Not { child } => !child.matches(object),
+            Self::Not { child } => !child.matches(item),
         }
+    }
+}
+
+fn parse_filter_path(path: &str) -> Result<Vec<FilterPathSegment>, String> {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.is_empty() {
+        return Err("Путь условия не может быть пустым".to_owned());
+    }
+
+    let mut segments = Vec::new();
+    let mut index = 0usize;
+    if chars.first() == Some(&'$') {
+        segments.push(FilterPathSegment::Root);
+        index += 1;
+        if index < chars.len() && chars[index] == '.' {
+            index += 1;
+        }
+    }
+
+    while index < chars.len() {
+        if segments.len() >= MAX_FILTER_PATH_SEGMENTS {
+            return Err(format!(
+                "Путь условия содержит больше {MAX_FILTER_PATH_SEGMENTS} сегментов"
+            ));
+        }
+
+        if chars[index] == '[' {
+            let close = chars[index + 1..]
+                .iter()
+                .position(|character| *character == ']')
+                .map(|offset| index + 1 + offset)
+                .ok_or_else(|| "В пути условия не закрыта квадратная скобка".to_owned())?;
+            let content: String = chars[index + 1..close].iter().collect();
+            if content == "*" {
+                segments.push(FilterPathSegment::Wildcard);
+            } else {
+                let array_index = content.parse::<usize>().map_err(|_| {
+                    "В квадратных скобках ожидается индекс массива или *".to_owned()
+                })?;
+                segments.push(FilterPathSegment::Index(array_index));
+            }
+            index = close + 1;
+        } else {
+            let start = index;
+            while index < chars.len() && chars[index] != '.' && chars[index] != '[' {
+                index += 1;
+            }
+            if start == index {
+                return Err("Некорректный пустой сегмент пути условия".to_owned());
+            }
+            segments.push(FilterPathSegment::Key(chars[start..index].iter().collect()));
+        }
+
+        if index < chars.len() && chars[index] == '.' {
+            index += 1;
+            if index == chars.len() || chars[index] == '.' || chars[index] == '[' {
+                return Err("Некорректный пустой сегмент пути условия".to_owned());
+            }
+        } else if index < chars.len() && chars[index] != '[' {
+            return Err("Некорректный путь условия".to_owned());
+        }
+    }
+
+    if segments.is_empty() {
+        return Err("Путь условия не может быть пустым".to_owned());
+    }
+    Ok(segments)
+}
+
+fn resolve_filter_path<'a>(
+    root: &'a Value,
+    segments: &[FilterPathSegment],
+) -> Option<Vec<&'a Value>> {
+    let mut current = vec![root];
+    for segment in segments {
+        let mut next = Vec::new();
+        for value in current {
+            match segment {
+                FilterPathSegment::Root => {
+                    if next.len() >= MAX_FILTER_PATH_VALUES {
+                        return None;
+                    }
+                    next.push(value);
+                }
+                FilterPathSegment::Key(key) => {
+                    if let Some(child) = value.as_object().and_then(|object| object.get(key)) {
+                        if next.len() >= MAX_FILTER_PATH_VALUES {
+                            return None;
+                        }
+                        next.push(child);
+                    }
+                }
+                FilterPathSegment::Index(index) => {
+                    if let Some(child) = value.as_array().and_then(|array| array.get(*index)) {
+                        if next.len() >= MAX_FILTER_PATH_VALUES {
+                            return None;
+                        }
+                        next.push(child);
+                    }
+                }
+                FilterPathSegment::Wildcard => match value {
+                    Value::Array(items) => {
+                        for child in items {
+                            if next.len() >= MAX_FILTER_PATH_VALUES {
+                                return None;
+                            }
+                            next.push(child);
+                        }
+                    }
+                    Value::Object(object) => {
+                        for child in object.values() {
+                            if next.len() >= MAX_FILTER_PATH_VALUES {
+                                return None;
+                            }
+                            next.push(child);
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        current = next;
+        if current.is_empty() {
+            break;
+        }
+    }
+    Some(current)
+}
+
+fn matches_path_condition(
+    item: &Value,
+    path: &str,
+    quantifier: FilterQuantifier,
+    operator: FilterOperator,
+    expected: &str,
+) -> bool {
+    let Ok(segments) = parse_filter_path(path) else {
+        return false;
+    };
+    let Some(values) = resolve_filter_path(item, &segments) else {
+        return false;
+    };
+    match quantifier {
+        FilterQuantifier::One => matches_value(values.first().copied(), operator, expected),
+        FilterQuantifier::Any => values
+            .iter()
+            .any(|value| matches_value(Some(*value), operator, expected)),
+        FilterQuantifier::All => {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| matches_value(Some(*value), operator, expected))
+        }
+        FilterQuantifier::None => values
+            .iter()
+            .all(|value| !matches_value(Some(*value), operator, expected)),
     }
 }
 
@@ -1083,6 +1263,94 @@ mod tests {
         assert_eq!(result["ok"], true);
         assert_eq!(result["nodes"]["filter"]["stats"]["output_items"], 1);
         assert_eq!(result["nodes"]["filter"]["preview"][0]["id"], "A1");
+    }
+
+    #[test]
+    fn filters_nested_objects_and_array_values_with_quantifiers() {
+        let data = json!({"users": [
+            {"id":"A1", "profile":{"age":25}, "tags":["vip", "new"]},
+            {"id":"B2", "profile":{"age":17}, "tags":["new"]},
+            {"id":"C3", "profile":{"age":31}, "tags":["blocked", "vip"]}
+        ]})
+        .to_string();
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":data,"format":"json","path":"/users"}},
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{
+                    "expression":{"kind":"group","operator":"and","children":[
+                        {"kind":"condition","field":"profile.age","operator":"greater_or_equal","value":"18"},
+                        {"kind":"condition","field":"tags[*]","quantifier":"any","operator":"equal","value":"vip"},
+                        {"kind":"condition","field":"tags[*]","quantifier":"none","operator":"equal","value":"blocked"}
+                    ]}
+                }}
+            ]
+        }));
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["nodes"]["filter"]["stats"]["output_items"], 1);
+        assert_eq!(result["nodes"]["filter"]["preview"][0]["id"], "A1");
+    }
+
+    #[test]
+    fn root_path_filters_scalar_and_array_items() {
+        let data = json!({"items": [7, 12, ["vip", "new"], ["new"]]}).to_string();
+        let scalar_result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":data,"format":"json","path":"/items"}},
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{
+                    "expression":{"kind":"condition","field":"$","operator":"greater_than","value":"10"}
+                }}
+            ]
+        }));
+        assert_eq!(scalar_result["nodes"]["filter"]["preview"], json!([12]));
+
+        let array_result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":data,"format":"json","path":"/items"}},
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{
+                    "expression":{"kind":"condition","field":"$[*]","quantifier":"any","operator":"equal","value":"vip"}
+                }}
+            ]
+        }));
+        assert_eq!(
+            array_result["nodes"]["filter"]["preview"],
+            json!([["vip", "new"]])
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_filter_path() {
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                source(),
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{
+                    "expression":{"kind":"condition","field":"name[","operator":"exists"}
+                }}
+            ]
+        }));
+        assert_eq!(
+            result["nodes"]["filter"]["diagnostics"][0]["code"],
+            "invalid_filter_path"
+        );
+    }
+
+    #[test]
+    fn oversized_wildcard_match_fails_closed() {
+        let values = vec![json!(0); MAX_FILTER_PATH_VALUES + 1];
+        let data = json!({"items": [{"values": values}]}).to_string();
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":data,"format":"json","path":"/items"}},
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{
+                    "expression":{"kind":"condition","field":"values[*]","quantifier":"none","operator":"equal","value":"1"}
+                }}
+            ]
+        }));
+        assert_eq!(result["nodes"]["filter"]["stats"]["output_items"], 0);
     }
 
     #[test]

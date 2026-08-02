@@ -137,6 +137,18 @@ const staleCondition = (
   config_path: configPath,
 });
 
+const rootFieldName = (path: string): string | null => {
+  if (path === "$" || path.startsWith("$[")) return null;
+  const normalized = path.startsWith("$.") ? path.slice(2) : path;
+  const bracket = normalized.indexOf("[");
+  const dot = normalized.indexOf(".");
+  const end = [bracket, dot].filter((index) => index >= 0).reduce(
+    (smallest, index) => Math.min(smallest, index),
+    normalized.length,
+  );
+  return normalized.slice(0, end);
+};
+
 /**
  * Diagnoses settings against a known immediate input schema. A missing schema
  * means upstream execution failed or has not run yet; in that case no field is
@@ -159,11 +171,12 @@ export const diagnoseStaleNodeFields = (
           condition,
           path: `filters[${index}].field`,
         }));
-    return conditions.flatMap(({ condition, path }) =>
-      available.has(condition.field)
+    return conditions.flatMap(({ condition, path }) => {
+      const rootField = rootFieldName(condition.field);
+      return rootField === null || available.has(rootField)
         ? []
-        : [staleCondition(step.node_id, condition.field, path)],
-    );
+        : [staleCondition(step.node_id, condition.field, path)];
+    });
   }
 
   const selected = step.node_type === "project"

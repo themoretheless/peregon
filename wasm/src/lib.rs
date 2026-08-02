@@ -921,38 +921,44 @@ fn matches_filters(
 }
 
 fn matches_condition(object: &Map<String, Value>, condition: &FilterCondition) -> bool {
-    let actual = object.get(&condition.field);
+    matches_value(
+        object.get(&condition.field),
+        condition.operator,
+        &condition.value,
+    )
+}
 
-    match condition.operator {
+fn matches_value(actual: Option<&Value>, operator: FilterOperator, expected: &str) -> bool {
+    match operator {
         FilterOperator::Exists => actual.is_some(),
         FilterOperator::NotExists => actual.is_none(),
         FilterOperator::Equal => actual
-            .and_then(|value| values_equal(value, &condition.value))
+            .and_then(|value| values_equal(value, expected))
             .unwrap_or(false),
         FilterOperator::NotEqual => actual
-            .and_then(|value| values_equal(value, &condition.value))
+            .and_then(|value| values_equal(value, expected))
             .map(|is_equal| !is_equal)
             .unwrap_or(false),
-        FilterOperator::GreaterThan => compare_value(actual, &condition.value)
+        FilterOperator::GreaterThan => compare_value(actual, expected)
             .map(|ordering| ordering == Ordering::Greater)
             .unwrap_or(false),
-        FilterOperator::GreaterOrEqual => compare_value(actual, &condition.value)
+        FilterOperator::GreaterOrEqual => compare_value(actual, expected)
             .map(|ordering| matches!(ordering, Ordering::Greater | Ordering::Equal))
             .unwrap_or(false),
-        FilterOperator::LessThan => compare_value(actual, &condition.value)
+        FilterOperator::LessThan => compare_value(actual, expected)
             .map(|ordering| ordering == Ordering::Less)
             .unwrap_or(false),
-        FilterOperator::LessOrEqual => compare_value(actual, &condition.value)
+        FilterOperator::LessOrEqual => compare_value(actual, expected)
             .map(|ordering| matches!(ordering, Ordering::Less | Ordering::Equal))
             .unwrap_or(false),
         FilterOperator::Contains => actual
-            .map(|value| filter_text(value).contains(&expected_string(&condition.value)))
+            .map(|value| filter_text(value).contains(&expected_string(expected)))
             .unwrap_or(false),
         FilterOperator::StartsWith => actual
-            .map(|value| filter_text(value).starts_with(&expected_string(&condition.value)))
+            .map(|value| filter_text(value).starts_with(&expected_string(expected)))
             .unwrap_or(false),
         FilterOperator::EndsWith => actual
-            .map(|value| filter_text(value).ends_with(&expected_string(&condition.value)))
+            .map(|value| filter_text(value).ends_with(&expected_string(expected)))
             .unwrap_or(false),
     }
 }

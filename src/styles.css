@@ -1529,7 +1529,7 @@ textarea:focus-visible {
   padding: 7px;
   display: grid;
   grid-template-columns: 21px minmax(0, 1fr) minmax(0, 1fr) 23px;
-  grid-template-rows: 30px 30px;
+  grid-template-rows: 30px 30px 30px;
   gap: 5px;
   border: 1px solid #e4e6df;
   border-radius: 8px;
@@ -1544,14 +1544,35 @@ textarea:focus-visible {
   font-size: 7.5px;
 }
 
-.filter-expression-condition input,
-.filter-expression-condition .unary-value {
+.filter-expression-condition .filter-path {
   grid-column: 2 / 4;
+  grid-row: 1;
+}
+
+.filter-expression-condition .filter-quantifier {
+  grid-column: 2;
   grid-row: 2;
 }
 
+.filter-expression-condition .filter-operator {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.filter-expression-condition .filter-value,
+.filter-expression-condition .unary-value {
+  grid-column: 2 / 4;
+  grid-row: 3;
+}
+
+.filter-expression-condition > .filter-expression-remove {
+  grid-column: 4;
+  grid-row: 1 / 4;
+  align-self: center;
+}
+
 .filter-expression-index {
-  grid-row: 1 / 3;
+  grid-row: 1 / 4;
   width: 20px;
   height: 20px;
   align-self: center;

@@ -57,6 +57,19 @@ test("NOT accepts a nested subtree rather than only a single flat condition", ()
   assert.deepEqual(normalizeFilterExpression(expression), expression);
 });
 
+test("conditions preserve JSON path quantifiers", () => {
+  const expression = {
+    kind: "condition",
+    field: "tags[*]",
+    quantifier: "any",
+    operator: "equal",
+    value: "vip",
+  };
+
+  assert.deepEqual(normalizeFilterExpression(expression), expression);
+  assert.equal(isFilterExpression({ ...expression, quantifier: "sometimes" }), false);
+});
+
 test("legacy flat conditions migrate to the equivalent minimal expression", () => {
   const legacy = [
     { field: "state", operator: "equal", value: "1" },

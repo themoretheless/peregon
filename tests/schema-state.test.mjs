@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildExecutePlanSchemaState,
+  diagnoseStaleNodeFields,
   inputFieldsForNode,
   outputFieldsForNode,
   staleFieldNames,
@@ -144,6 +145,32 @@ test("stale selections are diagnosed against the node input_schema", () => {
       { code: "condition_field_not_in_input_schema", field: "state" },
       { code: "condition_field_not_in_input_schema", field: "locality" },
     ],
+  );
+});
+
+test("nested and root JSON paths validate against their top-level input field", () => {
+  const step = {
+    node_id: "pathFilter",
+    node_type: "filter",
+    input: { node_id: "source", port: "records" },
+    config: {
+      filters: [],
+      filter_mode: "all",
+      expression: {
+        kind: "group",
+        operator: "and",
+        children: [
+          { kind: "condition", field: "profile.age", operator: "exists" },
+          { kind: "condition", field: "$.tags[*]", quantifier: "any", operator: "exists" },
+          { kind: "condition", field: "$", operator: "exists" },
+        ],
+      },
+    },
+  };
+
+  assert.deepEqual(
+    diagnoseStaleNodeFields(step, schema(field("profile", "object"), field("tags", "array"))),
+    [],
   );
 });
 

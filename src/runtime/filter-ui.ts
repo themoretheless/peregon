@@ -1,11 +1,12 @@
 import type { FilterOperator } from "../engine/types.ts";
-import type { FilterExpression } from "./filter-expression.ts";
+import type { FilterExpression, FilterQuantifier } from "./filter-expression.ts";
 
 export type UiFilterExpression =
   | {
       id: number;
       kind: "condition";
       field: string;
+      quantifier: FilterQuantifier;
       operator: FilterOperator;
       value: string;
     }
@@ -27,6 +28,7 @@ export const createUiCondition = (field = "state"): UiFilterExpression => ({
   id: nextFilterExpressionId++,
   kind: "condition",
   field,
+  quantifier: "one",
   operator: "equal",
   value: "1",
 });
@@ -52,6 +54,7 @@ export const legacyConditionsToUiExpression = (
     id: nextFilterExpressionId++,
     kind: "condition" as const,
     field: condition.field,
+    quantifier: "one" as const,
     operator: condition.operator,
     value: condition.value,
   })),
@@ -63,6 +66,7 @@ export const filterExpressionToUi = (expression: FilterExpression): UiFilterExpr
       id: nextFilterExpressionId++,
       kind: "condition",
       field: expression.field,
+      quantifier: expression.quantifier ?? "one",
       operator: expression.operator,
       value: expression.value ?? "",
     };

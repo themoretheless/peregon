@@ -7,9 +7,13 @@ import type {
 export const MAX_FILTER_EXPRESSION_DEPTH = 32;
 export const MAX_FILTER_EXPRESSION_NODES = 256;
 
+export type FilterQuantifier = "one" | "any" | "all" | "none";
+
 export interface FilterConditionExpression {
   readonly kind: "condition";
   readonly field: string;
+  /** How to combine values produced by `field` paths containing `[*]`. */
+  readonly quantifier?: FilterQuantifier;
   readonly operator: PlanFilterOperator;
   readonly value?: string;
 }
@@ -40,6 +44,7 @@ const OPERATORS = new Set<PlanFilterOperator>([
   "equal", "not_equal", "greater_than", "greater_or_equal", "less_than",
   "less_or_equal", "contains", "starts_with", "ends_with", "exists", "not_exists",
 ]);
+const QUANTIFIERS = new Set<FilterQuantifier>(["one", "any", "all", "none"]);
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,11 +72,16 @@ const normalizeAt = (
     input.field.length > 0 &&
     typeof input.operator === "string" &&
     OPERATORS.has(input.operator as PlanFilterOperator) &&
+    (input.quantifier === undefined ||
+      (typeof input.quantifier === "string" && QUANTIFIERS.has(input.quantifier as FilterQuantifier))) &&
     (input.value === undefined || typeof input.value === "string")
   ) {
     result = {
       kind: "condition",
       field: input.field,
+      ...(typeof input.quantifier === "string"
+        ? { quantifier: input.quantifier as FilterQuantifier }
+        : {}),
       operator: input.operator as PlanFilterOperator,
       ...(typeof input.value === "string" ? { value: input.value } : {}),
     };
