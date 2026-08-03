@@ -1,6 +1,7 @@
 use super::{
-    array_info, format_csv, format_flat, format_json, format_sql, format_xml, matches_filters,
-    matches_value, parse_input, FilterCondition, FilterMode, FilterOperator, SourceFormat,
+    array_info, format_csv, format_flat, format_json, format_sql, format_template, format_xml,
+    matches_filters, matches_value, parse_input, FilterCondition, FilterMode, FilterOperator,
+    SourceFormat,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -172,6 +173,10 @@ struct SinkConfig {
     xml_row: String,
     #[serde(default = "super::default_table_name")]
     table_name: String,
+    #[serde(default = "default_value_template")]
+    value_template: String,
+    #[serde(default = "super::default_true")]
+    strip_outer_quotes: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -179,6 +184,7 @@ struct SinkConfig {
 enum SinkFormat {
     #[default]
     Flat,
+    Template,
     Json,
     Csv,
     Xml,
@@ -191,6 +197,10 @@ fn default_csv_delimiter() -> String {
 
 fn default_flat_delimiter() -> String {
     ", ".to_owned()
+}
+
+fn default_value_template() -> String {
+    "{value}".to_owned()
 }
 
 #[derive(Clone)]
@@ -939,6 +949,16 @@ fn execute_sink(
             config.unique,
             &mut empty_values,
         ),
+        SinkFormat::Template => format_template(
+            &objects,
+            &fields,
+            &config.delimiter,
+            &config.value_template,
+            config.strip_outer_quotes,
+            config.skip_empty,
+            config.unique,
+            &mut empty_values,
+        ),
         SinkFormat::Json => format_json(&objects, &fields, &mut empty_values),
         SinkFormat::Csv => format_csv(
             &objects,
@@ -1491,6 +1511,44 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Белгород"));
+    }
+
+    #[test]
+    fn formats_each_selected_value_with_a_template() {
+        let quoted_data = json!([
+            {"id":"\"000D3A23B0DC80D811E68F98E099F565\""},
+            {"id":"\"000D3A22FA54A81611EB145B4F1E2FEB\""}
+        ])
+        .to_string();
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":quoted_data,"format":"json","path":""}},
+                {"node_id":"sink","node_type":"sink","input":{"node_id":"source"},"config":{"format":"template","fields":["id"],"delimiter":",\n","value_template":"0x{value}","strip_outer_quotes":true}}
+            ]
+        }));
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            result["sink_outputs"]["sink"],
+            "0x000D3A23B0DC80D811E68F98E099F565,\n0x000D3A22FA54A81611EB145B4F1E2FEB"
+        );
+    }
+
+    #[test]
+    fn transforms_a_plain_quoted_list_without_json_wrapping() {
+        let list = "\"000D3A23B0DC80D811E68F98E099F565\",\n\"000D3A22FA54A81611EB145B4F1E2FEB\",\n\"000D3A21DA51A81211E9DC4536C21386\"";
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":list,"format":"list","path":""}},
+                {"node_id":"sink","node_type":"sink","input":{"node_id":"source"},"config":{"format":"template","fields":["value"],"delimiter":",\n","value_template":"0x{value}"}}
+            ]
+        }));
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            result["sink_outputs"]["sink"],
+            "0x000D3A23B0DC80D811E68F98E099F565,\n0x000D3A22FA54A81611EB145B4F1E2FEB,\n0x000D3A21DA51A81211E9DC4536C21386"
+        );
     }
 
     #[test]

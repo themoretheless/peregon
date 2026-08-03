@@ -100,6 +100,33 @@ test("execution plan preserves fan-out as independent direct-parent bindings", (
   assert.deepEqual(steps[2].input, { node_id: "source", port: "records" });
 });
 
+test("template sink preserves the value template and line delimiter", () => {
+  const document = graph(
+    [source(), node("sink", "sink.template", { template: "0x{value}", delimiter: ",\n", fields: ["id"] })],
+    [connection("source-sink", "source", "records", "sink")],
+  );
+
+  const sink = buildExecutionPlanRequest(document).plan.steps[1];
+  assert.equal(sink.config.format, "template");
+  assert.equal(sink.config.value_template, "0x{value}");
+  assert.equal(sink.config.delimiter, ",\n");
+  assert.equal(sink.config.strip_outer_quotes, true);
+});
+
+test("plain list source compiles without JSON wrapping", () => {
+  const document = graph(
+    [
+      node("source", "source.list", { text: '"AAA",\n"BBB"' }),
+      node("sink", "sink.template", { template: "0x{value}", fields: ["value"] }),
+    ],
+    [connection("source-sink", "source", "records", "sink")],
+  );
+
+  const request = buildExecutionPlanRequest(document);
+  assert.equal(request.plan.steps[0].config.format, "list");
+  assert.equal(request.plan.steps[0].config.path, "");
+});
+
 test("execution plan rejects an invalid graph instead of emitting a partial request", () => {
   const document = graph(
     [source(), node("project", "transform.project", { fields: ["id"] })],

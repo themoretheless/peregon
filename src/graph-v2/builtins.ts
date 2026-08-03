@@ -32,7 +32,7 @@ const output = (name: string, label: string): PortDefinition => ({
 });
 
 const source = (
-  type: "source.json" | "source.csv",
+  type: "source.json" | "source.csv" | "source.list",
   label: string,
   defaultConfig: NodeDefinition["defaultConfig"],
 ): NodeDefinition => ({
@@ -61,7 +61,7 @@ const transform = (
 });
 
 const sink = (
-  type: `sink.${"flat" | "json" | "csv" | "xml" | "sql"}`,
+  type: `sink.${"flat" | "template" | "json" | "csv" | "xml" | "sql"}`,
   label: string,
   defaultConfig: NodeDefinition["defaultConfig"],
 ): NodeDefinition => ({
@@ -80,6 +80,7 @@ export const BUILTIN_NODE_DEFINITIONS: readonly NodeDefinition[] = [
     delimiter: ",",
     includeHeader: true,
   }),
+  source("source.list", "Список", { text: "", arrayPath: "" }),
   transform("transform.filter", "Фильтр строк", {
     mode: "all",
     conditions: [],
@@ -87,6 +88,13 @@ export const BUILTIN_NODE_DEFINITIONS: readonly NodeDefinition[] = [
   transform("transform.project", "Выбрать поля", { fields: [] }),
   sink("sink.flat", "Плоский список", {
     delimiter: ", ",
+    skipEmpty: true,
+    unique: false,
+    stripOuterQuotes: true,
+  }),
+  sink("sink.template", "По шаблону", {
+    template: "0x{value}",
+    delimiter: ",\n",
     skipEmpty: true,
     unique: false,
   }),

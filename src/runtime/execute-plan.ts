@@ -16,9 +16,9 @@ import {
 } from "./filter-expression.ts";
 import { computeExecutePlanStepCacheKey } from "./cache-key.ts";
 
-export type PlanSourceFormat = "json" | "csv";
+export type PlanSourceFormat = "json" | "csv" | "list";
 export type PlanFilterMode = "all" | "any";
-export type PlanSinkFormat = "flat" | "json" | "csv" | "xml" | "sql";
+export type PlanSinkFormat = "flat" | "template" | "json" | "csv" | "xml" | "sql";
 export type PlanFilterOperator =
   | "equal"
   | "not_equal"
@@ -69,6 +69,8 @@ export interface SinkStepConfig {
   readonly xml_root: string;
   readonly xml_row: string;
   readonly table_name: string;
+  readonly value_template: string;
+  readonly strip_outer_quotes: boolean;
 }
 
 export interface ExecutePlanInput {
@@ -196,6 +198,8 @@ export interface LegacyFlowLikeNode {
   readonly xmlRoot?: string;
   readonly xmlRow?: string;
   readonly tableName?: string;
+  readonly valueTemplate?: string;
+  readonly stripOuterQuotes?: boolean;
 }
 
 export interface BuildExecutionPlanOptions {
@@ -268,9 +272,11 @@ const sourceConfig = (
   // Legacy keys precede built-in defaults so an empty default `text` does not
   // mask the actual v1 `json` payload.
   data: stringValue(config.data, stringValue(config.json, stringValue(config.text))),
-  format: node.type === "source.csv" || config.format === "csv" || config.sourceFormat === "csv"
-    ? "csv"
-    : "json",
+  format: node.type === "source.list" || config.format === "list" || config.sourceFormat === "list"
+    ? "list"
+    : node.type === "source.csv" || config.format === "csv" || config.sourceFormat === "csv"
+      ? "csv"
+      : "json",
   path: stringValue(config.path, stringValue(config.selectedPath, stringValue(config.arrayPath))),
   csv_delimiter: oneCharacter(config.csv_delimiter ?? config.csvDelimiter ?? config.delimiter, ","),
 });
@@ -306,7 +312,7 @@ const projectConfig = (config: Readonly<Record<string, unknown>>): ProjectStepCo
 const sinkFormat = (node: GraphNode, config: Readonly<Record<string, unknown>>): PlanSinkFormat => {
   const fromType = node.type.startsWith("sink.") ? node.type.slice("sink.".length) : "";
   const candidate = stringValue(config.format, stringValue(config.outputFormat, fromType));
-  return candidate === "json" || candidate === "csv" || candidate === "xml" || candidate === "sql"
+  return candidate === "template" || candidate === "json" || candidate === "csv" || candidate === "xml" || candidate === "sql"
     ? candidate
     : "flat";
 };
@@ -316,8 +322,9 @@ const sinkConfig = (
   config: Readonly<Record<string, unknown>>,
 ): SinkStepConfig => {
   const fields = stringList(config.fields ?? config.selectedFields);
+  const format = sinkFormat(node, config);
   return {
-    format: sinkFormat(node, config),
+    format,
     ...(fields.length > 0 ? { fields } : {}),
     delimiter: stringValue(config.delimiter, ", "),
     skip_empty: booleanValue(config.skip_empty ?? config.skipEmpty, true),
@@ -334,6 +341,11 @@ const sinkConfig = (
     xml_root: stringValue(config.xml_root, stringValue(config.xmlRoot, stringValue(config.root, "rows"))),
     xml_row: stringValue(config.xml_row, stringValue(config.xmlRow, stringValue(config.row, "row"))),
     table_name: stringValue(config.table_name, stringValue(config.tableName, stringValue(config.table, "rows"))),
+    value_template: stringValue(
+      config.value_template,
+      stringValue(config.valueTemplate, stringValue(config.template, format === "template" ? "0x{value}" : "{value}")),
+    ),
+    strip_outer_quotes: booleanValue(config.strip_outer_quotes ?? config.stripOuterQuotes, true),
   };
 };
 
