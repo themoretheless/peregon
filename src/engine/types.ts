@@ -20,8 +20,8 @@ export interface ArrayInfo {
 }
 
 export type FilterMode = "all" | "any";
-export type SourceFormat = "json" | "csv";
-export type OutputFormat = "flat" | "json" | "csv" | "xml" | "sql";
+export type SourceFormat = "json" | "csv" | "list";
+export type OutputFormat = "flat" | "template" | "json" | "csv" | "xml" | "sql";
 
 export type FilterOperator =
   | "equal"
@@ -84,6 +84,8 @@ export type EngineRequest =
       xml_root: string;
       xml_row: string;
       table_name: string;
+      value_template: string;
+      strip_outer_quotes: boolean;
     };
 
 export interface AnalyzeSuccess {

@@ -21,6 +21,7 @@ enum SourceFormat {
     #[default]
     Json,
     Csv,
+    List,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -28,6 +29,7 @@ enum SourceFormat {
 enum OutputFormat {
     #[default]
     Flat,
+    Template,
     Json,
     Csv,
     Xml,
@@ -52,6 +54,10 @@ fn default_xml_row() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_value_template() -> String {
+    "{value}".to_owned()
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -135,6 +141,10 @@ enum EngineRequest {
         xml_row: String,
         #[serde(default = "default_table_name")]
         table_name: String,
+        #[serde(default = "default_value_template")]
+        value_template: String,
+        #[serde(default = "default_true")]
+        strip_outer_quotes: bool,
     },
 }
 
@@ -208,6 +218,8 @@ fn handle_request(request: EngineRequest) -> Value {
             xml_root,
             xml_row,
             table_name,
+            value_template,
+            strip_outer_quotes,
         } => transform(
             &json,
             &path,
@@ -226,6 +238,8 @@ fn handle_request(request: EngineRequest) -> Value {
             &xml_root,
             &xml_row,
             &table_name,
+            &value_template,
+            strip_outer_quotes,
         ),
     }
 }
@@ -370,7 +384,68 @@ fn parse_input(
     match source_format {
         SourceFormat::Json => parse_json(input),
         SourceFormat::Csv => parse_csv(input, csv_delimiter),
+        SourceFormat::List => parse_list(input),
     }
+}
+
+fn parse_list(input: &str) -> Result<Value, ParseProblem> {
+    let mut values = Vec::new();
+    let mut field = String::new();
+    let mut quote: Option<char> = None;
+    let mut line = 1usize;
+    let mut column = 0usize;
+
+    let push_field = |field: &mut String, values: &mut Vec<Value>| {
+        let value = field.trim();
+        if !value.is_empty() {
+            values.push(json!({ "value": value }));
+        }
+        field.clear();
+    };
+
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        column += 1;
+        if let Some(active_quote) = quote {
+            if character == '\\' && characters.peek() == Some(&active_quote) {
+                characters.next();
+                column += 1;
+                field.push(active_quote);
+            } else if character == active_quote {
+                quote = None;
+            } else {
+                field.push(character);
+            }
+            if character == '\n' {
+                line += 1;
+                column = 0;
+            }
+            continue;
+        }
+
+        match character {
+            '\"' | '\'' if field.trim().is_empty() => quote = Some(character),
+            ',' | '\n' => {
+                push_field(&mut field, &mut values);
+                if character == '\n' {
+                    line += 1;
+                    column = 0;
+                }
+            }
+            '\r' => {}
+            value => field.push(value),
+        }
+    }
+
+    if quote.is_some() {
+        return Err(ParseProblem {
+            message: "Незакрытая кавычка в списке".to_owned(),
+            line,
+            column,
+        });
+    }
+    push_field(&mut field, &mut values);
+    Ok(Value::Array(values))
 }
 
 fn parse_csv(input: &str, delimiter: &str) -> Result<Value, ParseProblem> {
@@ -595,6 +670,8 @@ fn transform(
     xml_root: &str,
     xml_row: &str,
     table_name: &str,
+    value_template: &str,
+    strip_outer_quotes: bool,
 ) -> Value {
     let value = match parse_input(input, source_format, csv_delimiter) {
         Ok(value) => value,
@@ -647,6 +724,16 @@ fn transform(
             &matched_objects,
             fields,
             delimiter,
+            skip_empty,
+            unique,
+            &mut empty_values,
+        ),
+        OutputFormat::Template => format_template(
+            &matched_objects,
+            fields,
+            delimiter,
+            value_template,
+            strip_outer_quotes,
             skip_empty,
             unique,
             &mut empty_values,
@@ -715,6 +802,76 @@ fn format_flat(
     }
     let count = values.len();
     (values.join(delimiter), count)
+}
+
+fn format_template(
+    objects: &[&Map<String, Value>],
+    fields: &[String],
+    delimiter: &str,
+    template: &str,
+    strip_outer_quotes: bool,
+    skip_empty: bool,
+    unique: bool,
+    empty_values: &mut usize,
+) -> (String, usize) {
+    let mut values = Vec::new();
+    let mut seen = HashSet::new();
+    for object in objects {
+        for field in fields {
+            match object.get(field) {
+                Some(Value::Null) | None => {
+                    *empty_values += 1;
+                    if !skip_empty {
+                        push_value(
+                            template.replace("{value}", ""),
+                            delimiter,
+                            unique,
+                            &mut seen,
+                            &mut values,
+                        );
+                    }
+                }
+                Some(value) => {
+                    let raw = value_to_text(value);
+                    let raw = if strip_outer_quotes {
+                        strip_matching_outer_quotes(&raw)
+                    } else {
+                        raw
+                    };
+                    if raw.is_empty() && skip_empty {
+                        *empty_values += 1;
+                    } else {
+                        push_value(
+                            template.replace("{value}", &raw),
+                            delimiter,
+                            unique,
+                            &mut seen,
+                            &mut values,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let count = values.len();
+    (values.join(delimiter), count)
+}
+
+fn strip_matching_outer_quotes(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    if first != '\"' && first != '\'' {
+        return value.to_owned();
+    }
+    let Some(last) = value.chars().last() else {
+        return value.to_owned();
+    };
+    if last != first || value.chars().count() < 2 {
+        return value.to_owned();
+    }
+    value[first.len_utf8()..value.len() - last.len_utf8()].to_owned()
 }
 
 fn projected_object(

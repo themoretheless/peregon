@@ -76,6 +76,8 @@ interface FlowNode {
   xmlRoot?: string;
   xmlRow?: string;
   tableName?: string;
+  valueTemplate?: string;
+  stripOuterQuotes?: boolean;
   output?: string;
   stats?: TransformSuccess | null;
   preview?: string;
@@ -160,6 +162,10 @@ A-101,Москва 4-10,Москва,1
 B-204,Белгород-2,Белгород,1
 K-307,Курск-1,Курск,0`;
 
+const SAMPLE_LIST = `"000D3A23B0DC80D811E68F98E099F565",
+"000D3A22FA54A81611EB145B4F1E2FEB",
+"000D3A21DA51A81211E9DC4536C21386"`;
+
 const NODE_META: Record<NodeKind, { label: string; eyebrow: string; icon: string; color: string }> = {
   source: { label: "Данные", eyebrow: "Источник", icon: "{ }", color: "#6557d9" },
   fields: { label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb" },
@@ -190,9 +196,11 @@ const VERSION_GROUPS = [
 const LIBRARY_BLOCKS: BlockDefinition[] = [
   { key: "json", kind: "source", format: "json", label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9", keywords: "json данные источник" },
   { key: "csv", kind: "source", format: "csv", label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf", keywords: "csv таблица данные источник" },
+  { key: "list", kind: "source", format: "list", label: "Список", eyebrow: "Источник", icon: "≡", color: "#8b5fbf", keywords: "список строки текст без json значения" },
   { key: "fields", kind: "fields", label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb", keywords: "поля выбрать оставить проекция" },
   { key: "condition", kind: "condition", label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288", keywords: "условие фильтр отбор where" },
   { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35", keywords: "текст строка список через запятую" },
+  { key: "template-output", kind: "output", outputFormat: "template", label: "По шаблону", eyebrow: "Преобразование", icon: "{x}", color: "#d06a35", keywords: "шаблон префикс суффикс 0x преобразовать перегон" },
   { key: "json-output", kind: "output", outputFormat: "json", label: "JSON", eyebrow: "Выход", icon: "{ }", color: "#d06a35", keywords: "json результат экспорт выход" },
   { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV конвертер", eyebrow: "Конвертация", icon: "CSV", color: "#d06a35", keywords: "json в csv конвертация таблица результат экспорт выход" },
   { key: "xml-output", kind: "output", outputFormat: "xml", label: "XML конвертер", eyebrow: "Конвертация", icon: "XML", color: "#b75a73", keywords: "json в xml конвертация разметка результат экспорт выход" },
@@ -221,7 +229,7 @@ function createPresetPipeline(title: string, sourceFormat: SourceFormat, sourceT
       {
         id: "source-1",
         kind: "source",
-        title: sourceFormat === "csv" ? "CSV-данные" : "Данные магазинов",
+        title: sourceFormat === "csv" ? "CSV-данные" : sourceFormat === "list" ? "Список" : "Данные магазинов",
         x: 80,
         y: 190,
         json: sourceText,
@@ -386,6 +394,8 @@ const executionSignature = computed(() =>
       xmlRoot: node.xmlRoot,
       xmlRow: node.xmlRow,
       tableName: node.tableName,
+      valueTemplate: node.valueTemplate,
+      stripOuterQuotes: node.stripOuterQuotes,
     })),
   }),
 );
@@ -424,9 +434,13 @@ function nodeMeta(kind: NodeKind) {
 
 function nodeDisplayMeta(node: FlowNode) {
   if (node.kind !== "source") return nodeMeta(node.kind);
-  return node.sourceFormat === "csv"
-    ? { label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf" }
-    : { label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9" };
+  if (node.sourceFormat === "csv") {
+    return { label: "CSV", eyebrow: "Источник", icon: "CSV", color: "#8b5fbf" };
+  }
+  if (node.sourceFormat === "list") {
+    return { label: "Список", eyebrow: "Источник", icon: "≡", color: "#8b5fbf" };
+  }
+  return { label: "JSON", eyebrow: "Источник", icon: "{ }", color: "#6557d9" };
 }
 
 function nodeById(id: string) {
@@ -653,11 +667,17 @@ function requiresValue(operator: FilterOperator) {
   return operator !== "exists" && operator !== "not_exists";
 }
 
+function initializeOutputFormat(node: FlowNode) {
+  if (node.outputFormat !== "template") return;
+  if (!node.valueTemplate || node.valueTemplate === "{value}") node.valueTemplate = "0x{value}";
+  if (!node.delimiter || node.delimiter === ", ") node.delimiter = ",\n";
+}
+
 function compatibleBlocks(node: FlowNode) {
   const allowedKeys = node.kind === "source"
-    ? ["fields", "flat", "json-output", "csv-output", "xml-output", "sql-output"]
+    ? ["fields", "flat", "template-output", "json-output", "csv-output", "xml-output", "sql-output"]
     : node.kind === "fields" || node.kind === "condition"
-      ? ["condition", "flat", "json-output", "csv-output", "xml-output", "sql-output"]
+      ? ["condition", "flat", "template-output", "json-output", "csv-output", "xml-output", "sql-output"]
       : [];
   return LIBRARY_BLOCKS.filter((block) => allowedKeys.includes(block.key));
 }
@@ -726,7 +746,7 @@ function addNode(
   if (kind === "source") {
     base.sourceFormat = sourceFormat;
     base.csvDelimiter = ",";
-    base.json = sourceFormat === "csv" ? SAMPLE_CSV : SAMPLE_JSON;
+    base.json = sourceFormat === "csv" ? SAMPLE_CSV : sourceFormat === "list" ? SAMPLE_LIST : SAMPLE_JSON;
   }
   if (kind === "fields") {
     base.selectedPath = "/stores";
@@ -738,7 +758,7 @@ function addNode(
     base.filterExpression = createUiFilterGroup("and", "state");
   }
   if (kind === "output") {
-    base.delimiter = ", ";
+    base.delimiter = outputFormat === "template" ? ",\n" : ", ";
     base.csvDelimiter = ",";
     base.csvIncludeHeader = true;
     base.csvQuoteAll = false;
@@ -746,6 +766,8 @@ function addNode(
     base.xmlRoot = "rows";
     base.xmlRow = "row";
     base.tableName = "result";
+    base.valueTemplate = outputFormat === "template" ? "0x{value}" : "{value}";
+    base.stripOuterQuotes = true;
     base.output = "";
     base.stats = null;
   }
@@ -1031,7 +1053,7 @@ function pipelineNodeConfig(node: FlowNode): Record<string, import("./graph-v2")
     return {
       title: node.title,
       text: node.json ?? "",
-      arrayPath: downstreamFields?.selectedPath ?? node.selectedPath ?? "",
+      arrayPath: node.sourceFormat === "list" ? "" : downstreamFields?.selectedPath ?? node.selectedPath ?? "",
       ...(node.sourceFormat === "csv"
         ? { delimiter: node.csvDelimiter ?? ",", includeHeader: true }
         : {}),
@@ -1059,6 +1081,8 @@ function pipelineNodeConfig(node: FlowNode): Record<string, import("./graph-v2")
     xmlRoot: node.xmlRoot ?? "rows",
     xmlRow: node.xmlRow ?? "row",
     tableName: node.tableName ?? "result",
+    valueTemplate: node.valueTemplate ?? "{value}",
+    stripOuterQuotes: node.stripOuterQuotes !== false,
   };
 }
 
@@ -1300,7 +1324,9 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
       y: graphNode.position.y,
     };
     if (kind === "source") {
-      imported.sourceFormat = graphNode.type === "source.csv" ? "csv" : "json";
+      imported.sourceFormat = graphNode.type === "source.csv"
+        ? "csv"
+        : graphNode.type === "source.list" ? "list" : "json";
       imported.json = typeof config.text === "string" ? config.text : "";
       imported.csvDelimiter = typeof config.delimiter === "string" ? config.delimiter : ",";
       imported.selectedPath = typeof config.arrayPath === "string" ? config.arrayPath : "";
@@ -1316,7 +1342,7 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
       imported.conditions = [];
     } else {
       const format = graphNode.type.slice("sink.".length);
-      imported.outputFormat = ["flat", "json", "csv", "xml", "sql"].includes(format)
+      imported.outputFormat = ["flat", "template", "json", "csv", "xml", "sql"].includes(format)
         ? format as OutputFormat
         : "flat";
       imported.delimiter = typeof config.delimiter === "string" ? config.delimiter : ", ";
@@ -1326,6 +1352,10 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
       imported.xmlRoot = typeof config.xmlRoot === "string" ? config.xmlRoot : "rows";
       imported.xmlRow = typeof config.xmlRow === "string" ? config.xmlRow : "row";
       imported.tableName = typeof config.tableName === "string" ? config.tableName : "result";
+      imported.valueTemplate = typeof config.valueTemplate === "string"
+        ? config.valueTemplate
+        : imported.outputFormat === "template" ? "0x{value}" : "{value}";
+      imported.stripOuterQuotes = config.stripOuterQuotes !== false;
       imported.output = "";
       imported.stats = null;
     }
@@ -2033,8 +2063,9 @@ onBeforeUnmount(() => {
             <template v-else>
               <label class="node-control compact-control output-format-control">
                 <span>Формат</span>
-                <select v-model="node.outputFormat" aria-label="Формат результата">
+                <select v-model="node.outputFormat" aria-label="Формат результата" @change="initializeOutputFormat(node)">
                   <option value="flat">Плоский список</option>
+                  <option value="template">По шаблону</option>
                   <option value="json">JSON</option>
                   <option value="csv">CSV</option>
                   <option value="xml">XML</option>
@@ -2045,6 +2076,25 @@ onBeforeUnmount(() => {
                 <span>Разделитель</span>
                 <input v-model="node.delimiter" maxlength="12" />
               </label>
+              <div v-else-if="node.outputFormat === 'template'" class="converter-settings">
+                <label class="node-control compact-control">
+                  <span>Шаблон · <code>{value}</code> — значение</span>
+                  <input v-model="node.valueTemplate" maxlength="2000" placeholder="0x{value}" />
+                </label>
+                <label class="node-control compact-control">
+                  <span>Разделитель</span>
+                  <select v-model="node.delimiter" aria-label="Разделитель значений по шаблону">
+                    <option :value="',\n'">Запятая + новая строка</option>
+                    <option value=", ">Запятая + пробел</option>
+                    <option value=",">Запятая</option>
+                    <option :value="'\n'">Новая строка</option>
+                  </select>
+                </label>
+                <label class="converter-option">
+                  <input v-model="node.stripOuterQuotes" type="checkbox" />
+                  <span>Убирать внешние кавычки</span>
+                </label>
+              </div>
               <div v-else-if="node.outputFormat === 'csv'" class="converter-settings">
                 <label class="node-control compact-control">
                   <span>Разделитель CSV</span>

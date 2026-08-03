@@ -43,7 +43,7 @@ const FILTER_OPERATORS = new Set<PlanFilterOperator>([
   "equal", "not_equal", "greater_than", "greater_or_equal", "less_than",
   "less_or_equal", "contains", "starts_with", "ends_with", "exists", "not_exists",
 ]);
-const SINK_FORMATS = new Set<PlanSinkFormat>(["flat", "json", "csv", "xml", "sql"]);
+const SINK_FORMATS = new Set<PlanSinkFormat>(["flat", "template", "json", "csv", "xml", "sql"]);
 
 const record = (value: unknown, path: string): Readonly<Record<string, unknown>> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -112,7 +112,11 @@ const configRecord = (node: Readonly<Record<string, unknown>>, path: string): Re
 
 const nodeType = (node: Readonly<Record<string, unknown>>, path: string): string => {
   if (typeof node.type === "string") return node.type;
-  if (node.kind === "source") return node.sourceFormat === "csv" ? "source.csv" : "source.json";
+  if (node.kind === "source") {
+    if (node.sourceFormat === "csv") return "source.csv";
+    if (node.sourceFormat === "list") return "source.list";
+    return "source.json";
+  }
   if (node.kind === "fields") return "transform.project";
   if (node.kind === "condition") return "transform.filter";
   if (node.kind === "output") {
@@ -148,7 +152,7 @@ const normalizedConfig = (
   const title = text(config.title, "", 120);
   const titled: Record<string, JsonValue> = {};
   if (title) titled.title = title;
-  if (type === "source.json" || type === "source.csv") {
+  if (type === "source.json" || type === "source.csv" || type === "source.list") {
     const source = text(config.data ?? config.json ?? config.text, "", MAX_PIPELINE_SOURCE_LENGTH);
     return {
       ...titled,
@@ -199,6 +203,12 @@ const normalizedConfig = (
       xmlRoot: text(config.xml_root ?? config.xmlRoot ?? config.root, "rows", 64),
       xmlRow: text(config.xml_row ?? config.xmlRow ?? config.row, "row", 64),
       tableName: text(config.table_name ?? config.tableName ?? config.table, "result", 64),
+      valueTemplate: text(
+        config.value_template ?? config.valueTemplate ?? config.template,
+        format === "template" ? "0x{value}" : "{value}",
+        2_000,
+      ),
+      stripOuterQuotes: bool(config.strip_outer_quotes ?? config.stripOuterQuotes, true),
       ...(stringList(config.fields ?? config.selectedFields).length
         ? { fields: stringList(config.fields ?? config.selectedFields) }
         : {}),
