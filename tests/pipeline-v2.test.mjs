@@ -185,6 +185,53 @@ test("nested filter AST survives v2 decoding and encoding without flattening", (
   assert.equal(filter.config.expression.children[1].child.kind, "group");
 });
 
+test("value-vector template and join nodes survive v2 migration with named ports", () => {
+  const value = v2Pipeline();
+  value.graph.nodes = [
+    {
+      id: "source",
+      type: "source.list",
+      position: { x: 0, y: 0 },
+      config: { text: '"A",\n"B"' },
+    },
+    {
+      id: "template",
+      type: "transform.template",
+      position: { x: 300, y: 0 },
+      config: { template: "0x{value}", stripOuterQuotes: true },
+    },
+    {
+      id: "join",
+      type: "sink.join",
+      position: { x: 600, y: 0 },
+      config: { delimiter: ",\n" },
+    },
+  ];
+  value.graph.connections = [
+    {
+      id: "source-template",
+      from: { nodeId: "source", port: "values" },
+      to: { nodeId: "template", port: "values" },
+    },
+    {
+      id: "template-join",
+      from: { nodeId: "template", port: "mapped" },
+      to: { nodeId: "join", port: "values" },
+    },
+  ];
+
+  const migrated = migratePipelineFile(value);
+  assert.deepEqual(migrated.graph.nodes.map((item) => item.type), [
+    "source.list",
+    "transform.template",
+    "sink.join",
+  ]);
+  assert.deepEqual(
+    migrated.graph.connections.map((edge) => [edge.from.port, edge.to.port]),
+    [["values", "values"], ["mapped", "values"]],
+  );
+});
+
 test("named ports and branching survive the pipeline roundtrip", () => {
   const pipeline = decodePipelineV2(encodePipelineV2(v2Pipeline()));
 

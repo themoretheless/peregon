@@ -116,6 +116,28 @@ test("template sink preserves the value template and line delimiter", () => {
   assert.equal(sink.config.strip_outer_quotes, true);
 });
 
+test("template transform keeps a value vector for a separate join step", () => {
+  const document = graph(
+    [
+      node("source", "source.list", { text: '"A1",\n"B2"' }),
+      node("template", "transform.template", { template: "0x{value}" }),
+      node("join", "sink.join", { delimiter: ",\n" }),
+    ],
+    [
+      connection("source-template", "source", "values", "template", "values"),
+      connection("template-join", "template", "mapped", "join", "values"),
+    ],
+  );
+
+  const request = buildExecutionPlanRequest(document);
+  assert.deepEqual(request.plan.steps.map((step) => step.node_type), ["source", "template", "sink"]);
+  assert.deepEqual(request.plan.steps[1].input, { node_id: "source", port: "values" });
+  assert.equal(request.plan.steps[1].config.value_template, "0x{value}");
+  assert.deepEqual(request.plan.steps[2].input, { node_id: "template", port: "mapped" });
+  assert.equal(request.plan.steps[2].config.format, "flat");
+  assert.equal(request.plan.steps[2].config.delimiter, ",\n");
+});
+
 test("plain list source compiles without JSON wrapping", () => {
   const document = graph(
     [

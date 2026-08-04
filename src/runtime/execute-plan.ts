@@ -57,6 +57,12 @@ export interface ProjectStepConfig {
   readonly fields: readonly string[];
 }
 
+export interface TemplateStepConfig {
+  readonly value_template: string;
+  readonly strip_outer_quotes: boolean;
+  readonly skip_empty: boolean;
+}
+
 export interface SinkStepConfig {
   readonly format: PlanSinkFormat;
   readonly fields?: readonly string[];
@@ -103,6 +109,12 @@ export interface ExecuteProjectStep extends ExecutePlanStepBase {
   readonly config: ProjectStepConfig;
 }
 
+export interface ExecuteTemplateStep extends ExecutePlanStepBase {
+  readonly node_type: "template";
+  readonly input: ExecutePlanInput;
+  readonly config: TemplateStepConfig;
+}
+
 export interface ExecuteSinkStep extends ExecutePlanStepBase {
   readonly node_type: "sink";
   readonly input: ExecutePlanInput;
@@ -113,6 +125,7 @@ export type ExecutePlanStep =
   | ExecuteSourceStep
   | ExecuteFilterStep
   | ExecuteProjectStep
+  | ExecuteTemplateStep
   | ExecuteSinkStep;
 
 export interface ExecutePlanRequest {
@@ -316,6 +329,15 @@ const projectConfig = (config: Readonly<Record<string, unknown>>): ProjectStepCo
   fields: stringList(config.selectedFields ?? config.fields),
 });
 
+const templateConfig = (config: Readonly<Record<string, unknown>>): TemplateStepConfig => ({
+  value_template: stringValue(
+    config.value_template,
+    stringValue(config.valueTemplate, stringValue(config.template, "0x{value}")),
+  ),
+  strip_outer_quotes: booleanValue(config.strip_outer_quotes ?? config.stripOuterQuotes, true),
+  skip_empty: booleanValue(config.skip_empty ?? config.skipEmpty, true),
+});
+
 const sinkFormat = (node: GraphNode, config: Readonly<Record<string, unknown>>): PlanSinkFormat => {
   const fromType = node.type.startsWith("sink.") ? node.type.slice("sink.".length) : "";
   const candidate = stringValue(config.format, stringValue(config.outputFormat, fromType));
@@ -426,6 +448,11 @@ export const buildExecutionPlanRequest = (
       cacheKeysByNodeId.set(node.id, key);
     } else if (node.type === "transform.project") {
       const base = { node_id: node.id, node_type: "project" as const, input, config: projectConfig(config) };
+      const key = cacheKey(base);
+      steps.push({ ...base, cache_key: key });
+      cacheKeysByNodeId.set(node.id, key);
+    } else if (node.type === "transform.template") {
+      const base = { node_id: node.id, node_type: "template" as const, input, config: templateConfig(config) };
       const key = cacheKey(base);
       steps.push({ ...base, cache_key: key });
       cacheKeysByNodeId.set(node.id, key);

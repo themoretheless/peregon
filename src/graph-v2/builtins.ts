@@ -55,23 +55,24 @@ const source = (
 });
 
 const transform = (
-  type: "transform.filter" | "transform.project",
+  type: "transform.filter" | "transform.project" | "transform.template",
   label: string,
   defaultConfig: NodeDefinition["defaultConfig"],
+  contract: PortContract = RECORDS,
 ): NodeDefinition => ({
   type,
   version: 1,
   label,
   category: "transform",
   ports: [
-    input("records", "Записи"),
-    output("matched", "Результат"),
+    input(contract.kind === "value-vector" ? "values" : "records", contract.kind === "value-vector" ? "Значения" : "Записи", true, contract),
+    output(contract.kind === "value-vector" ? "mapped" : "matched", "Результат", contract),
   ],
   defaultConfig,
 });
 
 const sink = (
-  type: `sink.${"flat" | "template" | "json" | "csv" | "xml" | "sql"}`,
+  type: `sink.${"flat" | "template" | "join" | "json" | "csv" | "xml" | "sql"}`,
   label: string,
   defaultConfig: NodeDefinition["defaultConfig"],
 ): NodeDefinition => ({
@@ -80,10 +81,10 @@ const sink = (
   label,
   category: "sink",
   ports: [input(
-    type === "sink.template" ? "values" : "records",
-    type === "sink.template" ? "Значения" : "Записи",
+    type === "sink.template" || type === "sink.join" ? "values" : "records",
+    type === "sink.template" || type === "sink.join" ? "Значения" : "Записи",
     true,
-    type === "sink.template" ? VALUES : RECORDS,
+    type === "sink.template" || type === "sink.join" ? VALUES : RECORDS,
   )],
   defaultConfig,
 });
@@ -101,6 +102,11 @@ export const BUILTIN_NODE_DEFINITIONS: readonly NodeDefinition[] = [
     conditions: [],
   }),
   transform("transform.project", "Выбрать поля", { fields: [] }),
+  transform("transform.template", "По шаблону", {
+    template: "0x{value}",
+    stripOuterQuotes: true,
+    skipEmpty: true,
+  }, VALUES),
   sink("sink.flat", "Плоский список", {
     delimiter: ", ",
     skipEmpty: true,
@@ -112,6 +118,9 @@ export const BUILTIN_NODE_DEFINITIONS: readonly NodeDefinition[] = [
     delimiter: ",\n",
     skipEmpty: true,
     unique: false,
+  }),
+  sink("sink.join", "Объединить", {
+    delimiter: ",\n",
   }),
   sink("sink.json", "JSON", { pretty: true }),
   sink("sink.csv", "CSV", {

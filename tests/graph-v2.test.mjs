@@ -75,12 +75,23 @@ test("Graph v2 permits fan-out from a many-cardinality output", () => {
   ]);
 });
 
-test("value-vector ports connect list sources only to template sinks", () => {
+test("value-vector transforms remain chainable until an explicit join sink", () => {
   const valid = graph(
-    [node("source", "source.list"), node("sink", "sink.template")],
-    [connection("values", "source", "values", "sink", "values")],
+    [
+      node("source", "source.list"),
+      node("template", "transform.template"),
+      node("join", "sink.join"),
+    ],
+    [
+      connection("source-template", "source", "values", "template", "values"),
+      connection("template-join", "template", "mapped", "join", "values"),
+    ],
   );
   assert.equal(validateGraph(valid).valid, true);
+  assert.equal(
+    BUILTIN_NODE_REGISTRY.get("transform.template").ports.some((port) => port.direction === "output"),
+    true,
+  );
 
   const invalid = graph(
     [node("source", "source.list"), node("sink", "sink.csv")],

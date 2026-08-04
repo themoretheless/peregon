@@ -14,6 +14,7 @@ import JsonCodeEditor from "./components/JsonCodeEditor.vue";
 import PlainTextViewer from "./components/PlainTextViewer.vue";
 import {
   BUILTIN_NODE_REGISTRY,
+  arePortContractsCompatible,
   preflightConnection,
   validateGraph,
   type GraphDocument,
@@ -48,7 +49,7 @@ import type {
 } from "./engine/types";
 import { FlowSurfaceRenderer, type SurfaceEdge } from "./graph/webgpu";
 
-type NodeKind = "source" | "fields" | "condition" | "output";
+type NodeKind = "source" | "fields" | "condition" | "template" | "join" | "output";
 type PortDirection = "input" | "output";
 type Theme = "light" | "dark";
 
@@ -171,6 +172,8 @@ const NODE_META: Record<NodeKind, { label: string; eyebrow: string; icon: string
   source: { label: "Данные", eyebrow: "Источник", icon: "{ }", color: "#6557d9" },
   fields: { label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb" },
   condition: { label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288" },
+  template: { label: "По шаблону", eyebrow: "Преобразование", icon: "{x}", color: "#d06a35" },
+  join: { label: "Объединить", eyebrow: "Сериализация", icon: "→", color: "#d06a35" },
   output: { label: "Результат", eyebrow: "Выход", icon: "→", color: "#d06a35" },
 };
 
@@ -200,8 +203,9 @@ const LIBRARY_BLOCKS: BlockDefinition[] = [
   { key: "list", kind: "source", format: "list", label: "Список", eyebrow: "Источник", icon: "≡", color: "#8b5fbf", keywords: "список строки текст без json значения" },
   { key: "fields", kind: "fields", label: "Поля", eyebrow: "Проекция", icon: "⌗", color: "#367fbb", keywords: "поля выбрать оставить проекция" },
   { key: "condition", kind: "condition", label: "Условие", eyebrow: "Фильтрация", icon: "ƒ", color: "#159288", keywords: "условие фильтр отбор where" },
-  { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35", keywords: "текст строка список через запятую" },
-  { key: "template-output", kind: "output", outputFormat: "template", label: "По шаблону", eyebrow: "Преобразование", icon: "{x}", color: "#d06a35", keywords: "шаблон префикс суффикс 0x преобразовать перегон" },
+  { key: "flat", kind: "output", outputFormat: "flat", label: "Плоский список", eyebrow: "Выход", icon: "→", color: "#d06a35", keywords: "поля текст строка список через запятую" },
+  { key: "join", kind: "join", label: "Объединить", eyebrow: "Сериализация", icon: "→", color: "#d06a35", keywords: "текст строка список склеить разделитель через запятую" },
+  { key: "template", kind: "template", label: "По шаблону", eyebrow: "Преобразование", icon: "{x}", color: "#d06a35", keywords: "шаблон префикс суффикс 0x преобразовать перегон map" },
   { key: "json-output", kind: "output", outputFormat: "json", label: "JSON", eyebrow: "Выход", icon: "{ }", color: "#d06a35", keywords: "json результат экспорт выход" },
   { key: "csv-output", kind: "output", outputFormat: "csv", label: "CSV конвертер", eyebrow: "Конвертация", icon: "CSV", color: "#d06a35", keywords: "json в csv конвертация таблица результат экспорт выход" },
   { key: "xml-output", kind: "output", outputFormat: "xml", label: "XML конвертер", eyebrow: "Конвертация", icon: "XML", color: "#b75a73", keywords: "json в xml конвертация разметка результат экспорт выход" },
@@ -465,7 +469,7 @@ function listPreviewContent(result: ExecutePlanNodeResult | undefined) {
 }
 
 function resultContentForNode(node: FlowNode | undefined, result: ExecutePlanNodeResult | undefined) {
-  return node?.kind === "source" && node.sourceFormat === "list"
+  return node?.kind === "template" || node?.kind === "source" && node.sourceFormat === "list"
     ? listPreviewContent(result)
     : previewContent(result);
 }
@@ -504,7 +508,7 @@ function inspectorInputFor(node: FlowNode): InspectorPane {
   const ownResult = executionResults[node.id];
   return {
     content: upstreamResult?.ok ? resultContentForNode(upstreamNode, upstreamResult) : "",
-    language: upstreamNode?.kind === "source" && upstreamNode.sourceFormat === "list" ? "list" : "json",
+    language: upstreamNode?.kind === "template" || upstreamNode?.kind === "source" && upstreamNode.sourceFormat === "list" ? "list" : "json",
     emptyMessage: upstreamResult
       ? "На входе нет строк"
       : isRunning.value ? "Вычисляю вход…" : "Запустите граф, чтобы увидеть вход",
@@ -517,10 +521,10 @@ function inspectorInputFor(node: FlowNode): InspectorPane {
 function inspectorOutputFor(node: FlowNode): InspectorPane {
   const result = executionResults[node.id];
   const error = resultError(result) || node.error || node.previewError || "";
-  if (node.kind === "output") {
+  if (node.kind === "output" || node.kind === "join") {
     return {
       content: result?.ok ? node.output ?? "" : "",
-      language: node.outputFormat ?? "flat",
+      language: node.kind === "join" ? "flat" : node.outputFormat ?? "flat",
       emptyMessage: result?.ok
         ? "Результат пуст"
         : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
@@ -531,7 +535,7 @@ function inspectorOutputFor(node: FlowNode): InspectorPane {
 
   return {
     content: result?.ok ? resultContentForNode(node, result) : "",
-    language: node.kind === "source" && node.sourceFormat === "list" ? "list" : "json",
+    language: node.kind === "template" || node.kind === "source" && node.sourceFormat === "list" ? "list" : "json",
     emptyMessage: result?.ok
       ? "На выходе нет строк"
       : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
@@ -579,16 +583,29 @@ function graphV2Type(node: FlowNode): string {
   if (node.kind === "source") return `source.${node.sourceFormat ?? "json"}`;
   if (node.kind === "fields") return "transform.project";
   if (node.kind === "condition") return "transform.filter";
+  if (node.kind === "template") return "transform.template";
+  if (node.kind === "join") return "sink.join";
   return `sink.${node.outputFormat ?? "flat"}`;
 }
 
+function graphV2Port(node: FlowNode, direction: PortDirection) {
+  return BUILTIN_NODE_REGISTRY.get(graphV2Type(node))?.ports.find((port) => port.direction === direction);
+}
+
 function graphV2OutputPort(node: FlowNode): string {
-  if (node.kind === "source") return node.sourceFormat === "list" ? "values" : "records";
-  return "matched";
+  return graphV2Port(node, "output")?.name ?? "matched";
 }
 
 function graphV2InputPort(node: FlowNode): string {
-  return node.kind === "output" && node.outputFormat === "template" ? "values" : "records";
+  return graphV2Port(node, "input")?.name ?? "records";
+}
+
+function hasInputPort(node: FlowNode) {
+  return Boolean(graphV2Port(node, "input"));
+}
+
+function hasOutputPort(node: FlowNode) {
+  return Boolean(graphV2Port(node, "output"));
 }
 
 function toGraphV2(graphNodes = nodes.value, graphEdges = edges.value): GraphDocument {
@@ -683,9 +700,10 @@ function fieldCount(count: number) {
 }
 
 function nodeSchemaText(node: FlowNode) {
-  if (!executionResponse.value) return "";
+  if (!executionResponse.value?.nodes) return "";
   if (node.kind === "source" && node.sourceFormat === "list") return "Выход: вектор значений";
-  if (node.kind === "output" && node.outputFormat === "template") return "Вход: вектор значений";
+  if (node.kind === "template") return "Вход: вектор → выход: вектор";
+  if (node.kind === "join") return "Вход: вектор значений → текст";
   const input = inputFieldsForNode(executionResponse.value, node.id);
   const output = outputFieldsForNode(executionResponse.value, node.id);
   if (!input.length && !output.length) return "";
@@ -700,22 +718,23 @@ function requiresValue(operator: FilterOperator) {
   return operator !== "exists" && operator !== "not_exists";
 }
 
-function initializeOutputFormat(node: FlowNode) {
-  if (node.outputFormat !== "template") return;
-  if (!node.valueTemplate || node.valueTemplate === "{value}") node.valueTemplate = "0x{value}";
-  if (!node.delimiter || node.delimiter === ", ") node.delimiter = ",\n";
-}
-
 function compatibleBlocks(node: FlowNode) {
-  if (node.kind === "source" && node.sourceFormat === "list") {
-    return LIBRARY_BLOCKS.filter((block) => block.key === "template-output");
-  }
-  const allowedKeys = node.kind === "source"
-    ? ["fields", "flat", "template-output", "json-output", "csv-output", "xml-output", "sql-output"]
-    : node.kind === "fields" || node.kind === "condition"
-      ? ["condition", "flat", "template-output", "json-output", "csv-output", "xml-output", "sql-output"]
-      : [];
-  return LIBRARY_BLOCKS.filter((block) => allowedKeys.includes(block.key));
+  const output = graphV2Port(node, "output");
+  if (!output) return [];
+  return LIBRARY_BLOCKS.filter((block) => {
+    if (block.kind === "source") return false;
+    const type = block.kind === "fields"
+      ? "transform.project"
+      : block.kind === "condition"
+        ? "transform.filter"
+        : block.kind === "template"
+          ? "transform.template"
+          : block.kind === "join"
+            ? "sink.join"
+            : `sink.${block.outputFormat ?? "flat"}`;
+    const input = BUILTIN_NODE_REGISTRY.get(type)?.ports.find((port) => port.direction === "input");
+    return Boolean(input && arePortContractsCompatible(output.contract, input.contract));
+  });
 }
 
 function continuationBlocks(node: FlowNode) {
@@ -793,6 +812,17 @@ function addNode(
     base.conditions = [{ id: nextConditionId++, field: "state", operator: "equal", value: "1" }];
     base.filterExpression = createUiFilterGroup("and", "state");
   }
+  if (kind === "template") {
+    base.valueTemplate = "0x{value}";
+    base.stripOuterQuotes = true;
+    base.preview = "";
+    base.previewStats = null;
+  }
+  if (kind === "join") {
+    base.delimiter = ",\n";
+    base.output = "";
+    base.stats = null;
+  }
   if (kind === "output") {
     base.delimiter = outputFormat === "template" ? ",\n" : ", ";
     base.csvDelimiter = ",";
@@ -865,7 +895,7 @@ function handlePort(nodeId: string, direction: PortDirection) {
 function connectNodes(fromId: string, toId: string) {
   const source = nodeById(fromId);
   const target = nodeById(toId);
-  if (!source || !target || source.kind === "output" || target.kind === "source") {
+  if (!source || !target || !hasOutputPort(source) || !hasInputPort(target)) {
     setNotice("Эти блоки нельзя соединить");
     return;
   }
@@ -1105,6 +1135,20 @@ function pipelineNodeConfig(node: FlowNode): Record<string, import("./graph-v2")
       ...(expression ? { expression } : {}),
     } as unknown as Record<string, import("./graph-v2").JsonValue>;
   }
+  if (node.kind === "template") {
+    return {
+      title: node.title,
+      template: node.valueTemplate ?? "0x{value}",
+      stripOuterQuotes: node.stripOuterQuotes !== false,
+      skipEmpty: true,
+    };
+  }
+  if (node.kind === "join") {
+    return {
+      title: node.title,
+      delimiter: node.delimiter ?? ",\n",
+    };
+  }
   return {
     title: node.title,
     format: node.outputFormat ?? "flat",
@@ -1208,7 +1252,7 @@ function isValidStoredPipeline(value: unknown): value is LoadedPipeline {
   if (typeof view.panX !== "number" || typeof view.panY !== "number" || typeof view.zoom !== "number"
     || !Number.isFinite(view.panX) || !Number.isFinite(view.panY) || !Number.isFinite(view.zoom)) return false;
   if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.edges)) return false;
-  const validNodeKinds = new Set(["source", "fields", "condition", "output"]);
+  const validNodeKinds = new Set(["source", "fields", "condition", "template", "join", "output"]);
   return candidate.nodes.every((node) => {
     if (!node || typeof node !== "object" || Array.isArray(node)) return false;
     const candidateNode = node as Record<string, unknown>;
@@ -1249,7 +1293,14 @@ function readPersistedPipeline(): LoadedPipeline | null {
         panY: parsed.view.panY,
         zoom: parsed.view.zoom,
       },
-      nodes: parsed.nodes,
+      nodes: parsed.nodes.map((node: FlowNode) => node.kind === "output" && node.outputFormat === "template"
+        ? {
+            ...node,
+            kind: "template" as const,
+            outputFormat: undefined,
+            delimiter: undefined,
+          }
+        : node),
       edges: parsed.edges,
     };
   } catch {
@@ -1351,6 +1402,10 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
         ? "fields"
         : graphNode.type === "transform.filter"
           ? "condition"
+          : graphNode.type === "transform.template" || graphNode.type === "sink.template"
+            ? "template"
+            : graphNode.type === "sink.join"
+              ? "join"
           : "output";
     const imported: FlowNode = {
       id: graphNode.id,
@@ -1376,6 +1431,17 @@ function parsePipelineFile(value: unknown): LoadedPipeline {
       imported.filterExpression = expression ? filterExpressionToUi(expression) : undefined;
       imported.filterMode = "all";
       imported.conditions = [];
+    } else if (kind === "template") {
+      imported.valueTemplate = typeof config.template === "string"
+        ? config.template
+        : typeof config.valueTemplate === "string" ? config.valueTemplate : "0x{value}";
+      imported.stripOuterQuotes = config.stripOuterQuotes !== false;
+      imported.preview = "";
+      imported.previewStats = null;
+    } else if (kind === "join") {
+      imported.delimiter = typeof config.delimiter === "string" ? config.delimiter : ",\n";
+      imported.output = "";
+      imported.stats = null;
     } else {
       const format = graphNode.type.slice("sink.".length);
       imported.outputFormat = ["flat", "template", "json", "csv", "xml", "sql"].includes(format)
@@ -1456,6 +1522,8 @@ function renderSurface() {
     source: [0.4, 0.34, 0.85, 0.92],
     fields: [0.21, 0.5, 0.73, 0.92],
     condition: [0.08, 0.57, 0.53, 0.92],
+    template: [0.82, 0.42, 0.21, 0.92],
+    join: [0.82, 0.42, 0.21, 0.92],
     output: [0.82, 0.42, 0.21, 0.92],
   };
   for (const edge of edges.value) {
@@ -1550,11 +1618,11 @@ function planStats(result: ExecutePlanNodeResult): TransformSuccess {
 function applyPlanNodeResult(node: FlowNode, result: ExecutePlanNodeResult | undefined, sinkOutput?: string) {
   const message = result?.diagnostics[0]?.message ?? "Блок не был выполнен";
   if (!result?.ok) {
-    if (node.kind === "output") {
+    if (node.kind === "output" || node.kind === "join") {
       node.output = "";
       node.stats = null;
       node.error = message;
-    } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source") {
+    } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source" || node.kind === "template") {
       node.preview = "";
       node.previewStats = null;
       node.previewError = message;
@@ -1564,12 +1632,12 @@ function applyPlanNodeResult(node: FlowNode, result: ExecutePlanNodeResult | und
     return;
   }
 
-  if (node.kind === "output") {
+  if (node.kind === "output" || node.kind === "join") {
     node.output = sinkOutput ?? "";
     node.stats = planStats(result);
     node.error = "";
-  } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source") {
-    node.preview = node.kind === "source" && node.sourceFormat === "list"
+  } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source" || node.kind === "template") {
+    node.preview = node.kind === "template" || node.kind === "source" && node.sourceFormat === "list"
       ? listPreviewContent(result)
       : JSON.stringify(result.preview, null, 2);
     node.previewStats = planStats(result);
@@ -1641,11 +1709,11 @@ async function executeGraph() {
     );
     for (const node of nodes.value) {
       if (connectedIds.has(node.id) || node.kind === "source") continue;
-      if (node.kind === "output") {
+      if (node.kind === "output" || node.kind === "join") {
         node.output = "";
         node.stats = null;
         node.error = "Соедините источник данных";
-      } else if (node.kind === "fields" || node.kind === "condition") {
+      } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "template") {
         node.preview = "";
         node.previewStats = null;
         node.previewError = "Подключите источник данных";
@@ -1942,7 +2010,7 @@ onBeforeUnmount(() => {
           @click.stop="handleNodeCardClick($event, node)"
         >
           <button
-            v-if="node.kind !== 'source'"
+            v-if="hasInputPort(node)"
             type="button"
             class="node-port input-port"
             :class="{ awaiting: connectingFrom }"
@@ -2105,12 +2173,55 @@ onBeforeUnmount(() => {
               <p v-if="node.previewError" class="node-error">{{ node.previewError }}</p>
             </template>
 
+            <template v-else-if="node.kind === 'template'">
+              <div class="converter-settings">
+                <label class="node-control compact-control">
+                  <span>Шаблон · <code>{value}</code> — значение</span>
+                  <input v-model="node.valueTemplate" maxlength="2000" placeholder="0x{value}" />
+                </label>
+                <label class="converter-option">
+                  <input v-model="node.stripOuterQuotes" type="checkbox" />
+                  <span>Убирать внешние кавычки</span>
+                </label>
+              </div>
+              <div class="node-label-row step-result-label">
+                <span>Массив после преобразования</span>
+                <small v-if="node.previewStats" class="node-ok">{{ node.previewStats.values }} значений</small>
+              </div>
+              <PlainTextViewer
+                class="node-step-preview"
+                :value="node.preview || (node.previewError ? '' : 'Результат появится здесь')"
+                :label="`Результат блока ${node.title}`"
+              />
+              <p v-if="node.previewError" class="node-error">{{ node.previewError }}</p>
+            </template>
+
+            <template v-else-if="node.kind === 'join'">
+              <label class="node-control compact-control">
+                <span>Разделитель</span>
+                <select v-model="node.delimiter" aria-label="Разделитель значений">
+                  <option :value="',\n'">Запятая + новая строка</option>
+                  <option value=", ">Запятая + пробел</option>
+                  <option value=",">Запятая</option>
+                  <option :value="'\n'">Новая строка</option>
+                </select>
+              </label>
+              <div class="node-label-row">
+                <span>Текст</span>
+                <small v-if="node.stats" class="node-ok">{{ node.stats.values }} значений</small>
+              </div>
+              <PlainTextViewer
+                :value="node.output || (node.error ? '' : 'Результат появится здесь')"
+                label="Результат блока"
+              />
+              <p v-if="node.error" class="node-error">{{ node.error }}</p>
+            </template>
+
             <template v-else>
               <label class="node-control compact-control output-format-control">
                 <span>Формат</span>
-                <select v-model="node.outputFormat" aria-label="Формат результата" @change="initializeOutputFormat(node)">
+                <select v-model="node.outputFormat" aria-label="Формат результата">
                   <option value="flat">Плоский список</option>
-                  <option value="template">По шаблону</option>
                   <option value="json">JSON</option>
                   <option value="csv">CSV</option>
                   <option value="xml">XML</option>
@@ -2121,25 +2232,6 @@ onBeforeUnmount(() => {
                 <span>Разделитель</span>
                 <input v-model="node.delimiter" maxlength="12" />
               </label>
-              <div v-else-if="node.outputFormat === 'template'" class="converter-settings">
-                <label class="node-control compact-control">
-                  <span>Шаблон · <code>{value}</code> — значение</span>
-                  <input v-model="node.valueTemplate" maxlength="2000" placeholder="0x{value}" />
-                </label>
-                <label class="node-control compact-control">
-                  <span>Разделитель</span>
-                  <select v-model="node.delimiter" aria-label="Разделитель значений по шаблону">
-                    <option :value="',\n'">Запятая + новая строка</option>
-                    <option value=", ">Запятая + пробел</option>
-                    <option value=",">Запятая</option>
-                    <option :value="'\n'">Новая строка</option>
-                  </select>
-                </label>
-                <label class="converter-option">
-                  <input v-model="node.stripOuterQuotes" type="checkbox" />
-                  <span>Убирать внешние кавычки</span>
-                </label>
-              </div>
               <div v-else-if="node.outputFormat === 'csv'" class="converter-settings">
                 <label class="node-control compact-control">
                   <span>Разделитель CSV</span>
@@ -2204,7 +2296,7 @@ onBeforeUnmount(() => {
           </footer>
 
           <button
-            v-if="node.kind !== 'output'"
+            v-if="hasOutputPort(node)"
             type="button"
             class="node-add-next"
             :class="{ active: continuationFor === node.id }"
@@ -2255,7 +2347,7 @@ onBeforeUnmount(() => {
           </div>
 
           <button
-            v-if="node.kind !== 'output'"
+            v-if="hasOutputPort(node)"
             type="button"
             class="node-port output-port"
             :class="{ active: connectingFrom === node.id }"

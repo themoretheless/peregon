@@ -17,7 +17,7 @@ import { parseValueVector, type ValueToken } from "./value-vector-parser.ts";
 
 interface VectorState {
   readonly tableName: string;
-  readonly tokens: readonly ValueToken[];
+  readonly count: number;
 }
 
 let duckdbPromise: Promise<AsyncDuckDB> | undefined;
@@ -60,10 +60,11 @@ const isVectorSource = (step: ExecutePlanStep): step is ExecuteSourceStep =>
   step.node_type === "source" && step.config.format === "list";
 
 const isVectorSink = (step: ExecutePlanStep): boolean =>
-  step.node_type === "sink" && step.config.format === "template";
+  step.node_type === "sink" && (step.config.format === "template" || step.config.format === "flat");
 
 export const isValueVectorPlan = (request: ExecutePlanRequest): boolean =>
-  request.plan.steps.length > 0 && request.plan.steps.every((step) => isVectorSource(step) || isVectorSink(step));
+  request.plan.steps.length > 0 && request.plan.steps.every((step) =>
+    isVectorSource(step) || step.node_type === "template" || isVectorSink(step));
 
 const stats = (input: number, output: number, values = output) => ({
   input_items: input,
@@ -78,17 +79,18 @@ const nodeResult = (
   preview: readonly string[],
   inputSchema: typeof vectorSchema | null,
   outputSchema: typeof vectorSchema | null,
-  total: number,
+  inputTotal: number,
+  outputTotal: number,
   previewLimit: number,
 ): ExecutePlanNodeResult => ({
   ok: true,
   cached: false,
   preview: preview.slice(0, previewLimit),
-  preview_truncated: total > previewLimit,
+  preview_truncated: outputTotal > previewLimit,
   schema: outputSchema,
   input_schema: inputSchema,
   output_schema: outputSchema,
-  stats: stats(inputSchema ? total : 0, total),
+  stats: stats(inputSchema ? inputTotal : 0, outputTotal),
   diagnostics: [],
 });
 
@@ -124,14 +126,21 @@ const orderedValues = async (connection: AsyncDuckDBConnection, tableName: strin
     .toArray()
     .map((row) => String((row as unknown as { value: unknown }).value));
 
-const renderTemplate = async (
+const tokensFromValues = (values: readonly string[]): ValueToken[] => values.map((value, position) => ({
+  position,
+  value,
+  sourceStart: 0,
+  sourceEnd: 0,
+  quoted: false,
+}));
+
+const applyTemplate = async (
   connection: AsyncDuckDBConnection,
   tableName: string,
   template: string,
-  delimiter: string,
   stripOuterQuotes: boolean,
   skipEmpty: boolean,
-): Promise<string> => {
+): Promise<string[]> => {
   const statement = await connection.prepare(`
     WITH normalized AS (
       SELECT
@@ -153,8 +162,7 @@ const renderTemplate = async (
   try {
     const result = await statement.query(stripOuterQuotes, template, skipEmpty);
     return result.toArray()
-      .map((row) => String((row as unknown as { output: unknown }).output))
-      .join(delimiter);
+      .map((row) => String((row as unknown as { output: unknown }).output));
   } finally {
     await statement.close();
   }
@@ -177,8 +185,33 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
         await withTimeout("Загрузка вектора в DuckDB", insertVector(connection, tableName, tokens));
         createdTables.push(tableName);
         const values = await withTimeout("Чтение вектора из DuckDB", orderedValues(connection, tableName));
-        states.set(step.node_id, { tableName, tokens });
-        nodes[step.node_id] = nodeResult(values, null, vectorSchema, tokens.length, request.plan.preview_limit);
+        states.set(step.node_id, { tableName, count: tokens.length });
+        nodes[step.node_id] = nodeResult(values, null, vectorSchema, 0, tokens.length, request.plan.preview_limit);
+        continue;
+      }
+
+      if (step.node_type === "template") {
+        const parent = states.get(step.input.node_id);
+        if (!parent) throw new Error(`Векторный вход блока «${step.node_id}» не найден`);
+        const values = await withTimeout("Применение шаблона в DuckDB", applyTemplate(
+          connection,
+          parent.tableName,
+          step.config.value_template,
+          step.config.strip_outer_quotes,
+          step.config.skip_empty,
+        ));
+        const tableName = `value_vector_${requestId}_${createdTables.length}`;
+        await withTimeout("Сохранение результата шаблона", insertVector(connection, tableName, tokensFromValues(values)));
+        createdTables.push(tableName);
+        states.set(step.node_id, { tableName, count: values.length });
+        nodes[step.node_id] = nodeResult(
+          values,
+          vectorSchema,
+          vectorSchema,
+          parent.count,
+          values.length,
+          request.plan.preview_limit,
+        );
         continue;
       }
 
@@ -186,16 +219,24 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
         const parent = states.get(step.input.node_id);
         if (!parent) throw new Error(`Векторный вход блока «${step.node_id}» не найден`);
         const values = await withTimeout("Чтение входа шаблона", orderedValues(connection, parent.tableName));
-        const output = await withTimeout("Применение шаблона в DuckDB", renderTemplate(
-          connection,
-          parent.tableName,
-          step.config.value_template,
-          step.config.delimiter,
-          step.config.strip_outer_quotes,
-          step.config.skip_empty,
-        ));
-        nodes[step.node_id] = nodeResult(values, vectorSchema, null, parent.tokens.length, request.plan.preview_limit);
-        sinkOutputs[step.node_id] = output;
+        const rendered = step.config.format === "template"
+          ? await withTimeout("Применение шаблона в DuckDB", applyTemplate(
+            connection,
+            parent.tableName,
+            step.config.value_template,
+            step.config.strip_outer_quotes,
+            step.config.skip_empty,
+          ))
+          : values;
+        nodes[step.node_id] = nodeResult(
+          rendered,
+          vectorSchema,
+          null,
+          parent.count,
+          rendered.length,
+          request.plan.preview_limit,
+        );
+        sinkOutputs[step.node_id] = rendered.join(step.config.delimiter);
       }
     }
 

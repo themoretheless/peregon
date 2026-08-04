@@ -684,6 +684,8 @@ textarea:focus-visible {
   width: 380px;
 }
 
+.node-template,
+.node-join,
 .node-output {
   width: 350px;
 }

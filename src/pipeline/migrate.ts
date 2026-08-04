@@ -119,6 +119,8 @@ const nodeType = (node: Readonly<Record<string, unknown>>, path: string): string
   }
   if (node.kind === "fields") return "transform.project";
   if (node.kind === "condition") return "transform.filter";
+  if (node.kind === "template") return "transform.template";
+  if (node.kind === "join") return "sink.join";
   if (node.kind === "output") {
     const format = SINK_FORMATS.has(node.outputFormat as PlanSinkFormat)
       ? node.outputFormat as PlanSinkFormat
@@ -186,6 +188,14 @@ const normalizedConfig = (
       ...(expression ? { expression: expression as unknown as JsonValue } : {}),
     };
   }
+  if (type === "transform.template") {
+    return {
+      ...titled,
+      template: text(config.value_template ?? config.valueTemplate ?? config.template, "0x{value}", 2_000),
+      stripOuterQuotes: bool(config.strip_outer_quotes ?? config.stripOuterQuotes, true),
+      skipEmpty: bool(config.skip_empty ?? config.skipEmpty, true),
+    };
+  }
   if (type.startsWith("sink.")) {
     const format = type.slice(5) as PlanSinkFormat;
     return {
@@ -219,9 +229,11 @@ const normalizedConfig = (
 
 const outputPort = (type: string): string => type === "source.list"
   ? "values"
+  : type === "transform.template" ? "mapped"
   : type.startsWith("source.") ? "records" : "matched";
 
-const inputPort = (type: string): string => type === "sink.template" ? "values" : "records";
+const inputPort = (type: string): string =>
+  type === "sink.template" || type === "sink.join" || type === "transform.template" ? "values" : "records";
 
 const metadata = (raw: Readonly<Record<string, unknown>>): PipelineFileV2["metadata"] => {
   const source = raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
@@ -347,14 +359,14 @@ export const migratePipelineFile = (value: unknown): PipelineFileV2 => {
       id,
       from: {
         nodeId: fromNodeId,
-        port: typeById.get(fromNodeId) === "source.list"
-          ? outputPort("source.list")
+        port: outputPort(typeById.get(fromNodeId) ?? "") === "values"
+          ? outputPort(typeById.get(fromNodeId) ?? "")
           : text(fromObject?.port, outputPort(typeById.get(fromNodeId) ?? ""), 120),
       },
       to: {
         nodeId: toNodeId,
-        port: typeById.get(toNodeId) === "sink.template"
-          ? inputPort("sink.template")
+        port: inputPort(typeById.get(toNodeId) ?? "") === "values"
+          ? inputPort(typeById.get(toNodeId) ?? "")
           : text(toObject?.port, "records", 120),
       },
     };

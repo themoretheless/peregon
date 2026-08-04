@@ -184,6 +184,8 @@ export const diagnoseStaleNodeFields = (
     });
   }
 
+  if (step.node_type === "template") return [];
+
   const selected = step.node_type === "project"
     ? step.config.fields
     : (step.config.fields ?? []);
