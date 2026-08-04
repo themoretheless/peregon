@@ -1160,11 +1160,37 @@ textarea:focus-visible {
   background: rgba(140, 200, 255, 0.1);
 }
 
+.json-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.json-code-gutter {
+  position: absolute;
+  z-index: 2;
+  inset: 30px auto 0 0;
+  width: 34px;
+  margin: 0;
+  padding: 11px 7px 11px 0;
+  overflow: hidden;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  color: #59636d;
+  background: #101416;
+  text-align: right;
+  user-select: none;
+  font: 9.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.json-code-gutter span {
+  display: block;
+}
+
 .json-code-highlight,
 .json-code-textarea {
   position: absolute;
-  inset: 0;
-  width: 100%;
+  inset: 0 0 0 34px;
+  width: auto;
   height: 100%;
   margin: 0;
   padding: 11px 12px;
@@ -1270,9 +1296,9 @@ textarea:focus-visible {
 }
 
 .json-code-readonly {
-  width: 100%;
-  height: 100%;
-  margin: 0;
+  width: calc(100% - 34px);
+  height: calc(100% - 30px);
+  margin: 30px 0 0 34px;
   padding: 10px 11px;
   overflow: auto;
   color: #d8dee9;
@@ -1745,6 +1771,93 @@ textarea:focus-visible {
   height: 132px;
   padding: 11px;
   color: #e6e9e6;
+}
+
+.plain-text-viewer {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+
+.plain-text-viewer.node-result-output {
+  padding: 0;
+}
+
+.plain-text-toolbar {
+  position: absolute;
+  z-index: 2;
+  inset: 0 0 auto;
+  height: 30px;
+  padding: 0 7px 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #818b98;
+  background: #14191b;
+  font: 650 7.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+}
+
+.plain-text-toolbar button {
+  min-height: 21px;
+  padding: 0 7px;
+  border: 1px solid rgba(140, 152, 168, 0.24);
+  border-radius: 5px;
+  color: #aeb7c2;
+  background: rgba(255, 255, 255, 0.045);
+  font: 650 7.5px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.plain-text-toolbar button:hover {
+  border-color: rgba(140, 200, 255, 0.45);
+  color: #dceeff;
+  background: rgba(140, 200, 255, 0.1);
+}
+
+.plain-text-gutter,
+.plain-text-content {
+  position: absolute;
+  top: 30px;
+  bottom: 0;
+  margin: 0;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  white-space: pre;
+  font: 9.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.plain-text-gutter {
+  left: 0;
+  width: 34px;
+  padding-right: 7px;
+  overflow: hidden;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  color: #59636d;
+  background: #101416;
+  text-align: right;
+  user-select: none;
+}
+
+.plain-text-gutter span {
+  display: block;
+}
+
+.plain-text-content {
+  right: 0;
+  left: 34px;
+  padding-right: 11px;
+  padding-left: 11px;
+  overflow: auto;
+  color: #e6e9e6;
+  outline: 0;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.plain-text-content:focus-visible {
+  outline: 2px solid rgba(112, 100, 223, 0.7);
+  outline-offset: -3px;
 }
 
 textarea.node-result-output,

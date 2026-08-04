@@ -11,6 +11,7 @@ import {
 import { JsonEngineClient } from "./engine/client";
 import FilterExpressionEditor from "./components/FilterExpressionEditor.vue";
 import JsonCodeEditor from "./components/JsonCodeEditor.vue";
+import PlainTextViewer from "./components/PlainTextViewer.vue";
 import {
   BUILTIN_NODE_REGISTRY,
   preflightConnection,
@@ -453,6 +454,22 @@ function previewContent(result: ExecutePlanNodeResult | undefined) {
   return result ? JSON.stringify(result.preview, null, 2) : "";
 }
 
+function listPreviewContent(result: ExecutePlanNodeResult | undefined) {
+  if (!result) return "";
+  return result.preview.flatMap((item) => {
+    if (typeof item === "string") return [item];
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
+    const value = (item as Readonly<Record<string, unknown>>).value;
+    return typeof value === "string" ? [value] : [];
+  }).join("\n");
+}
+
+function resultContentForNode(node: FlowNode | undefined, result: ExecutePlanNodeResult | undefined) {
+  return node?.kind === "source" && node.sourceFormat === "list"
+    ? listPreviewContent(result)
+    : previewContent(result);
+}
+
 function resultError(result: ExecutePlanNodeResult | undefined) {
   return result && !result.ok
     ? result.diagnostics[0]?.message ?? "Блок не был выполнен"
@@ -483,10 +500,11 @@ function inspectorInputFor(node: FlowNode): InspectorPane {
   }
 
   const upstreamResult = executionResults[edge.from];
+  const upstreamNode = nodeById(edge.from);
   const ownResult = executionResults[node.id];
   return {
-    content: upstreamResult?.ok ? previewContent(upstreamResult) : "",
-    language: "json",
+    content: upstreamResult?.ok ? resultContentForNode(upstreamNode, upstreamResult) : "",
+    language: upstreamNode?.kind === "source" && upstreamNode.sourceFormat === "list" ? "list" : "json",
     emptyMessage: upstreamResult
       ? "На входе нет строк"
       : isRunning.value ? "Вычисляю вход…" : "Запустите граф, чтобы увидеть вход",
@@ -512,8 +530,8 @@ function inspectorOutputFor(node: FlowNode): InspectorPane {
   }
 
   return {
-    content: result?.ok ? previewContent(result) : "",
-    language: "json",
+    content: result?.ok ? resultContentForNode(node, result) : "",
+    language: node.kind === "source" && node.sourceFormat === "list" ? "list" : "json",
     emptyMessage: result?.ok
       ? "На выходе нет строк"
       : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
@@ -565,7 +583,12 @@ function graphV2Type(node: FlowNode): string {
 }
 
 function graphV2OutputPort(node: FlowNode): string {
-  return node.kind === "source" ? "records" : "matched";
+  if (node.kind === "source") return node.sourceFormat === "list" ? "values" : "records";
+  return "matched";
+}
+
+function graphV2InputPort(node: FlowNode): string {
+  return node.kind === "output" && node.outputFormat === "template" ? "values" : "records";
 }
 
 function toGraphV2(graphNodes = nodes.value, graphEdges = edges.value): GraphDocument {
@@ -582,10 +605,14 @@ function toGraphV2(graphNodes = nodes.value, graphEdges = edges.value): GraphDoc
     })),
     connections: graphEdges.map((edge) => {
       const source = graphNodes.find((node) => node.id === edge.from);
+      const target = graphNodes.find((node) => node.id === edge.to);
       return {
         id: edge.id,
         from: { nodeId: edge.from, port: source ? graphV2OutputPort(source) : "records" },
-        to: { nodeId: edge.to, port: "records" },
+        to: {
+          nodeId: edge.to,
+          port: target ? graphV2InputPort(target) : "records",
+        },
       };
     }),
   };
@@ -624,8 +651,12 @@ function arraysForNode(nodeId: string) {
   return analysisForNode(nodeId)?.array_paths ?? [];
 }
 
+function recordFields(schema: ExecutePlanNodeResult["input_schema"] | undefined) {
+  return schema?.kind === "records" ? schema.fields : undefined;
+}
+
 function fieldsForNode(node: FlowNode) {
-  const runtimeFields = executionResults[node.id]?.input_schema?.fields;
+  const runtimeFields = recordFields(executionResults[node.id]?.input_schema);
   if (runtimeFields) return runtimeFields;
   const analysis = analysisForNode(node.id);
   const arrays = analysis?.array_paths ?? [];
@@ -634,7 +665,7 @@ function fieldsForNode(node: FlowNode) {
 }
 
 function availableConditionFields(nodeId: string) {
-  const runtimeFields = executionResults[nodeId]?.input_schema?.fields;
+  const runtimeFields = recordFields(executionResults[nodeId]?.input_schema);
   if (runtimeFields) return runtimeFields;
   const ancestor = collectAncestors(nodeId).find((node) => node.kind === "fields");
   if (ancestor) return fieldsForNode(ancestor);
@@ -653,6 +684,8 @@ function fieldCount(count: number) {
 
 function nodeSchemaText(node: FlowNode) {
   if (!executionResponse.value) return "";
+  if (node.kind === "source" && node.sourceFormat === "list") return "Выход: вектор значений";
+  if (node.kind === "output" && node.outputFormat === "template") return "Вход: вектор значений";
   const input = inputFieldsForNode(executionResponse.value, node.id);
   const output = outputFieldsForNode(executionResponse.value, node.id);
   if (!input.length && !output.length) return "";
@@ -674,6 +707,9 @@ function initializeOutputFormat(node: FlowNode) {
 }
 
 function compatibleBlocks(node: FlowNode) {
+  if (node.kind === "source" && node.sourceFormat === "list") {
+    return LIBRARY_BLOCKS.filter((block) => block.key === "template-output");
+  }
   const allowedKeys = node.kind === "source"
     ? ["fields", "flat", "template-output", "json-output", "csv-output", "xml-output", "sql-output"]
     : node.kind === "fields" || node.kind === "condition"
@@ -837,7 +873,7 @@ function connectNodes(fromId: string, toId: string) {
   const preflight = preflightConnection(toGraphV2(), BUILTIN_NODE_REGISTRY, {
     id: candidateId,
     from: { nodeId: fromId, port: graphV2OutputPort(source) },
-    to: { nodeId: toId, port: "records" },
+    to: { nodeId: toId, port: graphV2InputPort(target) },
   });
   if (!preflight.ok) {
     setNotice(preflight.issues[0]?.message ?? "Соединение несовместимо");
@@ -1533,7 +1569,9 @@ function applyPlanNodeResult(node: FlowNode, result: ExecutePlanNodeResult | und
     node.stats = planStats(result);
     node.error = "";
   } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source") {
-    node.preview = JSON.stringify(result.preview, null, 2);
+    node.preview = node.kind === "source" && node.sourceFormat === "list"
+      ? listPreviewContent(result)
+      : JSON.stringify(result.preview, null, 2);
     node.previewStats = planStats(result);
     node.previewError = "";
   } else {
@@ -1978,7 +2016,14 @@ onBeforeUnmount(() => {
                 <span>Результат</span>
                 <small v-if="node.previewStats" class="node-ok">{{ node.previewStats.matched_items }} строк</small>
               </div>
+              <PlainTextViewer
+                v-if="node.sourceFormat === 'list'"
+                class="node-step-preview"
+                :value="node.preview || (node.previewError ? '' : 'Результат появится здесь')"
+                :label="`Результат блока ${node.title}`"
+              />
               <JsonCodeEditor
+                v-else
                 class="node-result-output node-step-preview"
                 :model-value="node.preview || (node.previewError ? '' : 'Результат появится здесь')"
                 :highlight-syntax="Boolean(node.preview)"
@@ -2135,13 +2180,11 @@ onBeforeUnmount(() => {
                 readonly
                 label="Результат блока"
               />
-              <textarea
+              <PlainTextViewer
                 v-else
-                class="node-result-output"
                 :value="node.output || (node.error ? '' : 'Результат появится здесь')"
-                readonly
-                aria-label="Результат блока"
-              ></textarea>
+                label="Результат блока"
+              />
               <p v-if="node.error" class="node-error">{{ node.error }}</p>
               <div v-else-if="node.stats" class="output-stats">
                 <span><strong>{{ node.stats.matched_items }}</strong> прошло</span>

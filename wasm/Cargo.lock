@@ -133,8 +133,8 @@ dependencies = [
 
 [[package]]
 name = "themoretheless-tokenizer"
-version = "0.2.0"
-source = "git+https://github.com/themoretheless/tokenizer.git?tag=v0.2.0#f1e93913ca63f49b04f722d47b022b14fbbd0cb4"
+version = "0.3.0"
+source = "git+https://github.com/themoretheless/tokenizer.git?rev=d1f7c06f5d86f1810bc3214c87ee73374d107b63#d1f7c06f5d86f1810bc3214c87ee73374d107b63"
 
 [[package]]
 name = "unicode-ident"

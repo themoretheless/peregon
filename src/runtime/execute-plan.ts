@@ -154,17 +154,24 @@ export interface ExecutePlanRecordSchema {
   readonly fields: readonly ExecutePlanFieldSchema[];
 }
 
+export interface ExecutePlanValueVectorSchema {
+  readonly kind: "value-vector";
+  readonly value_type: "string";
+}
+
+export type ExecutePlanDataSchema = ExecutePlanRecordSchema | ExecutePlanValueVectorSchema;
+
 export interface ExecutePlanNodeResult {
   readonly ok: boolean;
   readonly cached: boolean;
   readonly preview: readonly JsonValue[];
   readonly preview_truncated: boolean;
   /** @deprecated Compatibility alias for output_schema during the transition. */
-  readonly schema: ExecutePlanRecordSchema | null;
+  readonly schema: ExecutePlanDataSchema | null;
   /** Schema read from this node's direct input binding. */
-  readonly input_schema: ExecutePlanRecordSchema | null;
+  readonly input_schema: ExecutePlanDataSchema | null;
   /** Schema physically emitted by this node. */
-  readonly output_schema: ExecutePlanRecordSchema | null;
+  readonly output_schema: ExecutePlanDataSchema | null;
   readonly stats: ExecutePlanNodeStats;
   readonly diagnostics: readonly ExecutePlanDiagnostic[];
 }
@@ -394,7 +401,7 @@ export const buildExecutionPlanRequest = (
       continue;
     }
 
-    const inputPort = definition.ports.find((port) => port.direction === "input" && port.name === "records");
+    const inputPort = definition.ports.find((port) => port.direction === "input");
     const connection = inputPort
       ? index.incomingByEndpoint.get(endpointKey({ nodeId: node.id, port: inputPort.name }))?.[0]
       : undefined;
@@ -402,9 +409,9 @@ export const buildExecutionPlanRequest = (
       throw new ExecutionPlanCompileError([{
         code: "required_input_missing",
         severity: "error",
-        message: `Обязательный вход «records» блока «${node.id}» не подключён`,
+        message: `Обязательный вход «${inputPort?.name ?? "records"}» блока «${node.id}» не подключён`,
         nodeId: node.id,
-        portName: "records",
+        portName: inputPort?.name ?? "records",
       }]);
     }
     const input: ExecutePlanInput = {

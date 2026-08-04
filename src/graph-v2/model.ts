@@ -94,20 +94,26 @@ export interface TextSchema {
   readonly mediaType?: string;
 }
 
+export interface ValueVectorSchema {
+  readonly kind: "value-vector";
+  readonly valueType: PrimitiveSchemaKind;
+}
+
 export interface UnknownDataSchema {
   readonly kind: "unknown";
 }
 
-export type DataSchema = RecordSetSchema | TextSchema | UnknownDataSchema;
+export type DataSchema = RecordSetSchema | ValueVectorSchema | TextSchema | UnknownDataSchema;
 
-export type DataKind = "record-set" | "text" | "unknown";
+export type DataKind = "record-set" | "value-vector" | "text" | "unknown";
 export type DataFormat =
   | "normalized"
   | "json"
   | "csv"
   | "xml"
   | "sql"
-  | "plain-text";
+  | "plain-text"
+  | "arrow";
 
 export interface PortContract {
   readonly kind: DataKind;

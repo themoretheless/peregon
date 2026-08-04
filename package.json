@@ -23,7 +23,9 @@
     "test": "cargo test --manifest-path wasm/Cargo.toml --locked --offline && npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.32.0",
     "@peregon/syntax-engine": "0.1.0",
+    "apache-arrow": "^17.0.0",
     "vue": "3.5.40"
   },
   "devDependencies": {

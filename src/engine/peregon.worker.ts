@@ -5,6 +5,7 @@ import init, {
   process_request,
 } from "../generated/peregon_engine/peregon_engine.js";
 import type { EngineRequest } from "./types";
+import { executeValueVectorPlan, isValueVectorPlan } from "./value-vector.ts";
 
 interface IncomingMessage {
   id: number;
@@ -18,8 +19,9 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
   const startedAt = performance.now();
 
   try {
-    await wasmReady;
-    const response = JSON.parse(process_request(JSON.stringify(request)));
+    const response = request.action === "execute_plan" && isValueVectorPlan(request)
+      ? await executeValueVectorPlan(request)
+      : (await wasmReady, JSON.parse(process_request(JSON.stringify(request))));
     self.postMessage({
       id,
       response,

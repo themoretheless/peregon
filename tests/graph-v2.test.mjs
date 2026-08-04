@@ -75,6 +75,20 @@ test("Graph v2 permits fan-out from a many-cardinality output", () => {
   ]);
 });
 
+test("value-vector ports connect list sources only to template sinks", () => {
+  const valid = graph(
+    [node("source", "source.list"), node("sink", "sink.template")],
+    [connection("values", "source", "values", "sink", "values")],
+  );
+  assert.equal(validateGraph(valid).valid, true);
+
+  const invalid = graph(
+    [node("source", "source.list"), node("sink", "sink.csv")],
+    [connection("records", "source", "values", "sink", "records")],
+  );
+  assert.ok(issueCodes(validateGraph(invalid)).includes("incompatible_ports"));
+});
+
 test("Graph v2 reports cycles and keeps the cyclic nodes out of the order", () => {
   const document = graph(
     [

@@ -217,7 +217,11 @@ const normalizedConfig = (
   throw new PipelineMigrationError("Неподдерживаемый тип блока", path);
 };
 
-const outputPort = (type: string): string => type.startsWith("source.") ? "records" : "matched";
+const outputPort = (type: string): string => type === "source.list"
+  ? "values"
+  : type.startsWith("source.") ? "records" : "matched";
+
+const inputPort = (type: string): string => type === "sink.template" ? "values" : "records";
 
 const metadata = (raw: Readonly<Record<string, unknown>>): PipelineFileV2["metadata"] => {
   const source = raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
@@ -343,9 +347,16 @@ export const migratePipelineFile = (value: unknown): PipelineFileV2 => {
       id,
       from: {
         nodeId: fromNodeId,
-        port: text(fromObject?.port, outputPort(typeById.get(fromNodeId) ?? ""), 120),
+        port: typeById.get(fromNodeId) === "source.list"
+          ? outputPort("source.list")
+          : text(fromObject?.port, outputPort(typeById.get(fromNodeId) ?? ""), 120),
       },
-      to: { nodeId: toNodeId, port: text(toObject?.port, "records", 120) },
+      to: {
+        nodeId: toNodeId,
+        port: typeById.get(toNodeId) === "sink.template"
+          ? inputPort("sink.template")
+          : text(toObject?.port, "records", 120),
+      },
     };
   });
 
