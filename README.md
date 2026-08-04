@@ -56,8 +56,8 @@ npm run build:pages
 
 - `src/` — Vue interface, background-process client, and Web Worker;
 - [`themoretheless/tokenizer`](https://github.com/themoretheless/tokenizer) —
-  a standalone `themoretheless-tokenizer` Rust crate pinned to a release Git
-  tag; Peregon converts its UTF-8 byte spans to UTF-16 offsets at the WASM
+  a standalone `themoretheless-tokenizer` Rust crate pinned to an exact Git
+  revision; Peregon converts its UTF-8 byte spans to UTF-16 offsets at the WASM
   boundary;
 - `packages/syntax-engine/` — a standalone npm package with an extensible
   tokenization core, language profiles, diagnostics, and a JSON formatter; its

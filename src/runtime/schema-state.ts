@@ -1,5 +1,6 @@
 import type {
   ExecutePlanFieldSchema,
+  ExecutePlanDataSchema,
   ExecutePlanRecordSchema,
   ExecutePlanRequest,
   ExecutePlanResponse,
@@ -45,6 +46,9 @@ export type ExecutePlanSchemaResponse = ExecutePlanResponse | SchemaAwareExecute
 
 type ExecutePlan = ExecutePlanRequest["plan"];
 
+const recordSchema = (schema: ExecutePlanDataSchema | null | undefined): ExecutePlanRecordSchema | null =>
+  schema?.kind === "records" ? schema : null;
+
 const stepById = (plan: ExecutePlan, nodeId: string): ExecutePlanStep | undefined =>
   plan.steps.find((step) => step.node_id === nodeId);
 
@@ -61,16 +65,16 @@ export const getNodeInputSchema = (
   const step = stepById(plan, nodeId);
   if (!step?.input) return null;
   const ownInputSchema = response.nodes[nodeId]?.input_schema;
-  if (ownInputSchema !== undefined) return ownInputSchema;
+  if (ownInputSchema !== undefined) return recordSchema(ownInputSchema);
   const parent = response.nodes[step.input.node_id];
-  return parent?.output_schema ?? parent?.schema ?? null;
+  return recordSchema(parent?.output_schema ?? parent?.schema);
 };
 
 export const getNodeOutputSchema = (
   response: ExecutePlanResponse,
   nodeId: string,
 ): ExecutePlanRecordSchema | null =>
-  response.nodes[nodeId]?.output_schema ?? response.nodes[nodeId]?.schema ?? null;
+  recordSchema(response.nodes[nodeId]?.output_schema ?? response.nodes[nodeId]?.schema);
 
 /** Fields suitable for a dropdown on this exact node input. */
 export const getActualInputFields = (
@@ -85,7 +89,7 @@ export const inputFieldsForNode = (
   response: ExecutePlanSchemaResponse,
   nodeId: string,
 ): readonly ExecutePlanFieldSchema[] =>
-  response.nodes[nodeId]?.input_schema?.fields ?? [];
+  recordSchema(response.nodes[nodeId]?.input_schema)?.fields ?? [];
 
 /** Fields physically emitted by the node after its transformation. */
 export const outputFieldsForNode = (
@@ -94,8 +98,9 @@ export const outputFieldsForNode = (
 ): readonly ExecutePlanFieldSchema[] => {
   const node = response.nodes[nodeId];
   if (!node) return [];
-  if (node.output_schema) return node.output_schema.fields;
-  return "schema" in node ? node.schema?.fields ?? [] : [];
+  const output = recordSchema(node.output_schema);
+  if (output) return output.fields;
+  return "schema" in node ? recordSchema(node.schema)?.fields ?? [] : [];
 };
 
 /** Selected names which are no longer present on this node's direct input. */
@@ -104,7 +109,7 @@ export const staleFieldNames = (
   nodeId: string,
   selected: readonly string[],
 ): readonly string[] => {
-  const inputSchema = response.nodes[nodeId]?.input_schema;
+  const inputSchema = recordSchema(response.nodes[nodeId]?.input_schema);
   // No schema means "not executed/failed upstream", not "known to have zero fields".
   if (!inputSchema) return [];
   const available = new Set(inputSchema.fields.map((field) => field.name));

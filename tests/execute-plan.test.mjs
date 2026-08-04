@@ -102,8 +102,11 @@ test("execution plan preserves fan-out as independent direct-parent bindings", (
 
 test("template sink preserves the value template and line delimiter", () => {
   const document = graph(
-    [source(), node("sink", "sink.template", { template: "0x{value}", delimiter: ",\n", fields: ["id"] })],
-    [connection("source-sink", "source", "records", "sink")],
+    [
+      node("source", "source.list", { text: '"A1",\n"B2"' }),
+      node("sink", "sink.template", { template: "0x{value}", delimiter: ",\n" }),
+    ],
+    [connection("source-sink", "source", "values", "sink", "values")],
   );
 
   const sink = buildExecutionPlanRequest(document).plan.steps[1];
@@ -119,7 +122,7 @@ test("plain list source compiles without JSON wrapping", () => {
       node("source", "source.list", { text: '"AAA",\n"BBB"' }),
       node("sink", "sink.template", { template: "0x{value}", fields: ["value"] }),
     ],
-    [connection("source-sink", "source", "records", "sink")],
+    [connection("source-sink", "source", "values", "sink", "values")],
   );
 
   const request = buildExecutionPlanRequest(document);

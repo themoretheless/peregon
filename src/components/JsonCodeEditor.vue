@@ -29,6 +29,10 @@ const emit = defineEmits<{
 
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const highlight = ref<HTMLElement | null>(null);
+const readonlyContent = ref<HTMLElement | null>(null);
+const gutter = ref<HTMLElement | null>(null);
+const copied = ref(false);
+let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 const requestedLanguage = () => props.language ?? "json";
 const languageProblem = (language = requestedLanguage()) => syntaxEngine.get(language)
   ? ""
@@ -42,6 +46,10 @@ let contentRevision = 1;
 let syntaxDocument: SyntaxDocument<unknown> | null = null;
 const renderedValue = shallowRef(currentValue);
 const textareaValue = computed(() => withEditorEol(renderedValue.value, "\n"));
+const lineNumbers = computed(() => Array.from(
+  { length: Math.max(1, textareaValue.value.split("\n").length) },
+  (_, index) => index + 1,
+));
 const lines = shallowRef<readonly TokenizedLine[]>([]);
 const renderSyntax = ref(false);
 const largeFileMode = ref(false);
@@ -115,9 +123,33 @@ function update(event: Event) {
 }
 
 function syncScroll() {
-  if (!textarea.value || !highlight.value) return;
-  highlight.value.scrollTop = textarea.value.scrollTop;
-  highlight.value.scrollLeft = textarea.value.scrollLeft;
+  const scroller = props.readonly ? readonlyContent.value : textarea.value;
+  if (!scroller) return;
+  if (highlight.value) {
+    highlight.value.scrollTop = scroller.scrollTop;
+    highlight.value.scrollLeft = scroller.scrollLeft;
+  }
+  if (gutter.value) gutter.value.scrollTop = scroller.scrollTop;
+}
+
+async function copyAll() {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(currentValue);
+  } else {
+    const fallback = document.createElement("textarea");
+    fallback.value = currentValue;
+    fallback.style.position = "fixed";
+    fallback.style.opacity = "0";
+    document.body.append(fallback);
+    fallback.select();
+    document.execCommand("copy");
+    fallback.remove();
+  }
+  copied.value = true;
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    copied.value = false;
+  }, 1400);
 }
 
 const invalidTokens = new WeakMap<TokenizedLine, ReadonlySet<number>>();
@@ -180,21 +212,36 @@ function handleKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="json-code-editor" :class="{ 'is-readonly': readonly, 'has-toolbar': !readonly }">
-    <div v-if="!readonly" class="json-editor-toolbar">
+  <div class="json-code-editor has-toolbar" :class="{ 'is-readonly': readonly }">
+    <div class="json-editor-toolbar">
       <span :class="{ 'is-error': formatError }">{{ toolbarLabel }}</span>
-      <button
-        type="button"
-        title="Форматировать (Shift+Alt+F)"
-        @pointerdown.stop
-        @click.stop="format"
-      >Форматировать</button>
+      <div class="json-editor-actions">
+        <button
+          type="button"
+          title="Копировать весь текст"
+          @pointerdown.stop
+          @click.stop="copyAll"
+        >{{ copied ? "Скопировано" : "Копировать всё" }}</button>
+        <button
+          v-if="!readonly"
+          type="button"
+          title="Форматировать (Shift+Alt+F)"
+          @pointerdown.stop
+          @click.stop="format"
+        >Форматировать</button>
+      </div>
     </div>
+    <pre ref="gutter" class="json-code-gutter" aria-hidden="true"><span
+      v-for="number in lineNumbers"
+      :key="number"
+    >{{ number }}</span></pre>
     <pre
       v-if="readonly"
+      ref="readonlyContent"
       class="json-code-readonly"
       :aria-label="label"
       tabindex="0"
+      @scroll="syncScroll"
     ><code v-if="renderSyntax"><span
       v-for="line in lines"
       :key="line.id"

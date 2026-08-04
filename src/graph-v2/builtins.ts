@@ -10,25 +10,31 @@ const RECORDS: PortContract = {
   formats: ["normalized"],
 };
 
+const VALUES: PortContract = {
+  kind: "value-vector",
+  formats: ["arrow"],
+};
+
 const input = (
   name: string,
   label: string,
   required = true,
+  contract: PortContract = RECORDS,
 ): PortDefinition => ({
   name,
   label,
   direction: "input",
   cardinality: "one",
   required,
-  contract: RECORDS,
+  contract,
 });
 
-const output = (name: string, label: string): PortDefinition => ({
+const output = (name: string, label: string, contract: PortContract = RECORDS): PortDefinition => ({
   name,
   label,
   direction: "output",
   cardinality: "many",
-  contract: RECORDS,
+  contract,
 });
 
 const source = (
@@ -40,7 +46,11 @@ const source = (
   version: 1,
   label,
   category: "source",
-  ports: [output("records", "Записи")],
+  ports: [output(
+    type === "source.list" ? "values" : "records",
+    type === "source.list" ? "Значения" : "Записи",
+    type === "source.list" ? VALUES : RECORDS,
+  )],
   defaultConfig,
 });
 
@@ -69,7 +79,12 @@ const sink = (
   version: 1,
   label,
   category: "sink",
-  ports: [input("records", "Записи")],
+  ports: [input(
+    type === "sink.template" ? "values" : "records",
+    type === "sink.template" ? "Значения" : "Записи",
+    true,
+    type === "sink.template" ? VALUES : RECORDS,
+  )],
   defaultConfig,
 });
 
