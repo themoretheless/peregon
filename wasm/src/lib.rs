@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use themoretheless_tokenizer::{tokenize_json, TokenKind};
 use wasm_bindgen::prelude::*;
 
+mod datasets;
 mod plan;
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -93,6 +94,14 @@ enum EngineRequest {
     ExecutePlan {
         plan: plan::ExecutionPlan,
     },
+    PreviewDataset {
+        dataset_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ReleaseDatasets {
+        dataset_ids: Vec<String>,
+    },
     Analyze {
         json: String,
         #[serde(default)]
@@ -180,6 +189,8 @@ fn handle_request(request: EngineRequest) -> Value {
     match request {
         EngineRequest::TokenizeJson { source } => tokenize_json_response(&source),
         EngineRequest::ExecutePlan { plan } => plan::execute(plan),
+        EngineRequest::PreviewDataset { dataset_id, limit } => datasets::preview(&dataset_id, limit),
+        EngineRequest::ReleaseDatasets { dataset_ids } => datasets::release(&dataset_ids),
         EngineRequest::Analyze {
             json,
             source_format,

@@ -51,10 +51,28 @@ Dataset IDs остаются непрозрачными и не сохраняю
 отдельный сервис нужны только для серверных заданий, общего доступа к datasets
 или объёмов выше практических браузерных лимитов.
 
+## Состояние
+
+`RuntimeDatasetRef` подключён к Rust backend:
+
+- WASM-движок держит session-scoped хранилище датасетов (content-addressed id,
+  LRU, ограничение по памяти) и отдаёт ссылку `{dataset_id, kind, content_hash}`
+  в результате каждого успешного узла плана;
+- действия `preview_dataset` и `release_datasets` дают bounded-выборку и
+  освобождение без повторного выполнения графа;
+- `RustWasmBackend` (`src/runtime/rust-backend.ts`) реализует контракт
+  `RuntimeBackend` (supports / execute / preview / release) и добавляет к
+  ссылкам `backendId` и `sessionId`; ссылки чужого backend или завершённой
+  сессии отклоняются;
+- инспектор узла загружает через `preview(ref, limit)` до 1000 строк поверх
+  встроенного превью в 50 строк.
+
 ## Следующий шаг
 
-Сначала существующий `RuntimeDatasetRef` подключается к Rust backend. DuckDB
-имеет смысл проверять отдельным spike `source.parquet → transform.aggregate →
-preview`, измерив размер assets, cold start, время первого preview и peak memory.
-До появления JOIN/aggregate/SQL/Parquet устанавливать DuckDB в приложение не
-нужно.
+DuckDB имеет смысл проверять отдельным spike `source.parquet →
+transform.aggregate → preview`, измерив размер assets, cold start, время
+первого preview и peak memory. До появления JOIN/aggregate/SQL/Parquet
+устанавливать DuckDB как полноценный второй backend не нужно; существующий
+value-vector конвейер остаётся точечным исключением. Будущий
+`@peregon/runtime-duckdb-wasm` должен реализовать тот же контракт
+`RuntimeBackend` со своим `backendId`.

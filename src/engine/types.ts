@@ -47,6 +47,15 @@ import type { ExecutePlanRequest } from "../runtime/execute-plan.ts";
 export type EngineRequest =
   | ExecutePlanRequest
   | {
+      action: "preview_dataset";
+      dataset_id: string;
+      limit?: number;
+    }
+  | {
+      action: "release_datasets";
+      dataset_ids: string[];
+    }
+  | {
       action: "tokenize_json";
       source: string;
     }
@@ -150,12 +159,29 @@ export interface FilterPreviewSuccess {
   skipped_items: number;
 }
 
+export interface PreviewDatasetSuccess {
+  ok: true;
+  dataset_id: string;
+  kind: string;
+  content_hash: string;
+  items: unknown[];
+  total_items: number;
+  truncated: boolean;
+}
+
+export interface ReleaseDatasetsSuccess {
+  ok: true;
+  released: number;
+}
+
 export interface EngineFailure {
   ok: false;
   error: EngineError;
 }
 
 export type AnalyzeResponse = AnalyzeSuccess | EngineFailure;
+export type PreviewDatasetResponse = PreviewDatasetSuccess | EngineFailure;
+export type ReleaseDatasetsResponse = ReleaseDatasetsSuccess | EngineFailure;
 export type FilterPreviewResponse = FilterPreviewSuccess | EngineFailure;
 export type TransformResponse = TransformSuccess | EngineFailure;
 

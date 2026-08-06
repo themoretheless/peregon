@@ -2026,6 +2026,26 @@ textarea.node-result-output,
   background: rgba(208, 106, 53, 0.18);
 }
 
+.node-inspector-expand {
+  padding: 3px 7px;
+  border: 1px solid rgba(21, 146, 136, 0.45);
+  border-radius: 999px;
+  color: #78cbbb;
+  background: transparent;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.node-inspector-expand:hover:not(:disabled) {
+  background: rgba(21, 146, 136, 0.16);
+}
+
+.node-inspector-expand:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .json-code-editor.node-inspector-code {
   height: 100%;
   min-height: 0;

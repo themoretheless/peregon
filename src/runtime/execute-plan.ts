@@ -161,11 +161,20 @@ export interface ExecutePlanValueVectorSchema {
 
 export type ExecutePlanDataSchema = ExecutePlanRecordSchema | ExecutePlanValueVectorSchema;
 
+/** Wire-shape dataset reference; the session/backend identity is added client-side. */
+export interface ExecutePlanDatasetRef {
+  readonly dataset_id: string;
+  readonly kind: string;
+  readonly content_hash: string;
+}
+
 export interface ExecutePlanNodeResult {
   readonly ok: boolean;
   readonly cached: boolean;
   readonly preview: readonly JsonValue[];
   readonly preview_truncated: boolean;
+  /** Present when the full node output is retained in the backend dataset store. */
+  readonly dataset?: ExecutePlanDatasetRef | null;
   /** @deprecated Compatibility alias for output_schema during the transition. */
   readonly schema: ExecutePlanDataSchema | null;
   /** Schema read from this node's direct input binding. */

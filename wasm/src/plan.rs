@@ -364,6 +364,17 @@ fn execute_step_cached(
     if let Some(identity) = cache_identity.as_deref() {
         if let Some(mut hit) = EXECUTION_CACHE.with(|cache| cache.borrow_mut().get(identity)) {
             set_cached(&mut hit.response, true);
+            // A cached response may reference a dataset that was evicted since;
+            // re-registering keeps the returned dataset ref resolvable.
+            if let Some(data) = hit.data.as_deref() {
+                let dataset = super::datasets::register("records", data);
+                if let Some(object) = hit.response.as_object_mut() {
+                    object.insert(
+                        "dataset".to_owned(),
+                        dataset.unwrap_or(Value::Null),
+                    );
+                }
+            }
             return hit;
         }
     }
@@ -1008,10 +1019,12 @@ fn success(
         .clone()
         .or_else(|| input_schema.clone())
         .unwrap_or_else(|| json!({"kind": "records", "fields": []}));
+    let dataset = super::datasets::register("records", &data);
     let response = json!({
         "ok": true,
         "preview": preview,
         "preview_truncated": data.len() > preview_limit,
+        "dataset": dataset,
         "input_schema": input_schema,
         "output_schema": output_schema,
         "schema": execution_schema,
@@ -1077,6 +1090,7 @@ fn failure_node(issue: Value, input_schema: Option<Value>) -> Value {
         "cached": false,
         "preview": [],
         "preview_truncated": false,
+        "dataset": null,
         "input_schema": input_schema,
         "output_schema": null,
         "schema": null,
@@ -1594,6 +1608,79 @@ mod tests {
             serde_json::from_str(&crate::process_request(&request.to_string())).unwrap();
         assert_eq!(response["ok"], true);
         assert_eq!(response["nodes"]["source"]["stats"]["output_items"], 2);
+    }
+
+    #[test]
+    fn node_results_expose_previewable_dataset_refs() {
+        clear_cache();
+        crate::datasets::clear();
+        let result = run(json!({
+            "version": 1,
+            "preview_limit": 1,
+            "steps": [
+                source(),
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{"filters":[{"field":"state","operator":"equal","value":"1"}]}}
+            ]
+        }));
+        assert_eq!(result["ok"], true);
+        let dataset = &result["nodes"]["source"]["dataset"];
+        assert_eq!(dataset["kind"], "records");
+        let source_id = dataset["dataset_id"].as_str().unwrap();
+        assert_eq!(
+            source_id,
+            format!("ds-{}", dataset["content_hash"].as_str().unwrap())
+        );
+        assert_ne!(
+            source_id,
+            result["nodes"]["filter"]["dataset"]["dataset_id"]
+                .as_str()
+                .unwrap()
+        );
+
+        let preview_request = json!({
+            "action": "preview_dataset",
+            "dataset_id": source_id,
+            "limit": 10
+        });
+        let preview: Value =
+            serde_json::from_str(&crate::process_request(&preview_request.to_string())).unwrap();
+        assert_eq!(preview["ok"], true);
+        assert_eq!(preview["total_items"], 2);
+        assert_eq!(preview["items"].as_array().unwrap().len(), 2);
+        assert_eq!(preview["items"][0]["id"], "A1");
+    }
+
+    #[test]
+    fn cache_hit_re_registers_released_dataset() {
+        clear_cache();
+        crate::datasets::clear();
+        let build = || json!({"version":1, "steps":[cached(source(), "dataset-cache-hit")]});
+        let first = run(build());
+        let dataset_id = first["nodes"]["source"]["dataset"]["dataset_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let release_request = json!({
+            "action": "release_datasets",
+            "dataset_ids": [dataset_id.clone()]
+        });
+        let released: Value =
+            serde_json::from_str(&crate::process_request(&release_request.to_string())).unwrap();
+        assert_eq!(released["released"], 1);
+
+        let second = run(build());
+        assert_eq!(second["nodes"]["source"]["cached"], true);
+        assert_eq!(
+            second["nodes"]["source"]["dataset"]["dataset_id"],
+            Value::String(dataset_id.clone())
+        );
+        let preview_request = json!({
+            "action": "preview_dataset",
+            "dataset_id": dataset_id
+        });
+        let preview: Value =
+            serde_json::from_str(&crate::process_request(&preview_request.to_string())).unwrap();
+        assert_eq!(preview["ok"], true);
     }
 
     #[test]

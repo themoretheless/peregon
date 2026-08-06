@@ -147,6 +147,10 @@ export interface RuntimeDatasetRef {
   datasetId: string;
   kind: RuntimeValueKind;
   contentHash: string;
+  /** Backend that owns the dataset; a ref is only valid inside that backend. */
+  backendId: string;
+  /** Backend instance (worker lifetime) the dataset belongs to. */
+  sessionId: string;
 }
 
 export interface NodeOutputResult {

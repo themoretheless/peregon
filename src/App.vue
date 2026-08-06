@@ -18,12 +18,14 @@ import {
   validateGraph,
   type GraphDocument,
   type GraphNode,
+  type JsonValue,
 } from "./graph-v2";
 import {
   buildExecutionPlanRequest,
   type ExecutePlanNodeResult,
   type ExecutePlanResponse,
 } from "./runtime/execute-plan.ts";
+import { RustWasmBackend } from "./runtime/rust-backend.ts";
 import { inputFieldsForNode, outputFieldsForNode } from "./runtime/schema-state.ts";
 import {
   createUiFilterGroup,
@@ -132,7 +134,17 @@ interface InspectorPane {
   emptyMessage: string;
   itemCount?: number;
   truncated?: boolean;
+  /** How many rows the pane is currently showing, for the truncation badge. */
+  shownCount?: number;
+  /** Node whose retained dataset can be loaded beyond the inline preview. */
+  expandNodeId?: string;
   error?: string;
+}
+
+interface ExpandedPreview {
+  items: JsonValue[];
+  totalItems: number;
+  truncated: boolean;
 }
 
 const SAMPLE_JSON = `{
@@ -329,6 +341,8 @@ const pipelineTitle = ref(initialPipeline.title ?? "Обработка мага�
 const analyses = reactive<Record<string, AnalyzeSuccess | undefined>>({});
 const executionResults = reactive<Record<string, ExecutePlanNodeResult | undefined>>({});
 const executionResponse = ref<ExecutePlanResponse | null>(null);
+const expandedPreviews = reactive<Record<string, ExpandedPreview | undefined>>({});
+const expandingNodeId = ref("");
 const board = ref<HTMLElement | null>(null);
 const surface = ref<HTMLCanvasElement | null>(null);
 const panX = ref(0);
@@ -351,6 +365,7 @@ const pipelineFileInput = ref<HTMLInputElement | null>(null);
 const theme = ref<Theme>("light");
 
 let client: JsonEngineClient | null = null;
+let runtimeBackend: RustWasmBackend | null = null;
 let renderer: FlowSurfaceRenderer | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let renderFrame = 0;
@@ -450,13 +465,8 @@ function nodeById(id: string) {
 
 const inspectedNode = computed(() => nodeById(inspectedNodeId.value));
 
-function previewContent(result: ExecutePlanNodeResult | undefined) {
-  return result ? JSON.stringify(result.preview, null, 2) : "";
-}
-
-function listPreviewContent(result: ExecutePlanNodeResult | undefined) {
-  if (!result) return "";
-  return result.preview.flatMap((item) => {
+function listPreviewContent(items: readonly JsonValue[]) {
+  return items.flatMap((item) => {
     if (typeof item === "string") return [item];
     if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
     const value = (item as Readonly<Record<string, unknown>>).value;
@@ -464,10 +474,51 @@ function listPreviewContent(result: ExecutePlanNodeResult | undefined) {
   }).join("\n");
 }
 
+function previewItemsFor(nodeId: string | undefined, result: ExecutePlanNodeResult | undefined): readonly JsonValue[] {
+  const expanded = nodeId ? expandedPreviews[nodeId] : undefined;
+  return expanded?.items ?? result?.preview ?? [];
+}
+
 function resultContentForNode(node: FlowNode | undefined, result: ExecutePlanNodeResult | undefined) {
+  if (!result) return "";
+  const items = previewItemsFor(node?.id, result);
   return node?.kind === "source" && node.sourceFormat === "list"
-    ? listPreviewContent(result)
-    : previewContent(result);
+    ? listPreviewContent(items)
+    : JSON.stringify(items, null, 2);
+}
+
+function paneTruncationFor(nodeId: string | undefined, result: ExecutePlanNodeResult | undefined) {
+  const expanded = nodeId ? expandedPreviews[nodeId] : undefined;
+  return {
+    truncated: expanded ? expanded.truncated : result?.preview_truncated,
+    shownCount: expanded?.items.length ?? result?.preview.length,
+  };
+}
+
+function expandableNodeId(nodeId: string | undefined): string | undefined {
+  if (!nodeId || expandedPreviews[nodeId]) return undefined;
+  const result = executionResults[nodeId];
+  return result?.ok && result.dataset && result.preview_truncated ? nodeId : undefined;
+}
+
+const FULL_PREVIEW_LIMIT = 1000;
+
+async function expandNodePreview(nodeId: string) {
+  const dataset = executionResults[nodeId]?.dataset;
+  if (!dataset || !runtimeBackend || expandingNodeId.value) return;
+  expandingNodeId.value = nodeId;
+  try {
+    const sample = await runtimeBackend.preview(runtimeBackend.datasetRef(dataset), FULL_PREVIEW_LIMIT);
+    expandedPreviews[nodeId] = {
+      items: [...sample.items],
+      totalItems: sample.totalItems,
+      truncated: sample.truncated,
+    };
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : "Не удалось загрузить полные данные");
+  } finally {
+    expandingNodeId.value = "";
+  }
 }
 
 function resultError(result: ExecutePlanNodeResult | undefined) {
@@ -479,6 +530,7 @@ function resultError(result: ExecutePlanNodeResult | undefined) {
 function clearExecutionResults() {
   executionResponse.value = null;
   for (const nodeId of Object.keys(executionResults)) delete executionResults[nodeId];
+  for (const nodeId of Object.keys(expandedPreviews)) delete expandedPreviews[nodeId];
 }
 
 function inspectorInputFor(node: FlowNode): InspectorPane {
@@ -502,6 +554,7 @@ function inspectorInputFor(node: FlowNode): InspectorPane {
   const upstreamResult = executionResults[edge.from];
   const upstreamNode = nodeById(edge.from);
   const ownResult = executionResults[node.id];
+  const truncation = paneTruncationFor(upstreamNode?.id, upstreamResult);
   return {
     content: upstreamResult?.ok ? resultContentForNode(upstreamNode, upstreamResult) : "",
     language: upstreamNode?.kind === "source" && upstreamNode.sourceFormat === "list" ? "list" : "json",
@@ -509,7 +562,8 @@ function inspectorInputFor(node: FlowNode): InspectorPane {
       ? "На входе нет строк"
       : isRunning.value ? "Вычисляю вход…" : "Запустите граф, чтобы увидеть вход",
     itemCount: ownResult?.stats.input_items ?? upstreamResult?.stats.output_items,
-    truncated: upstreamResult?.preview_truncated,
+    ...truncation,
+    expandNodeId: expandableNodeId(upstreamNode?.id),
     error: resultError(upstreamResult),
   };
 }
@@ -536,7 +590,8 @@ function inspectorOutputFor(node: FlowNode): InspectorPane {
       ? "На выходе нет строк"
       : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
     itemCount: result?.stats.output_items,
-    truncated: result?.preview_truncated,
+    ...paneTruncationFor(node.id, result),
+    expandNodeId: expandableNodeId(node.id),
     error,
   };
 }
@@ -1570,7 +1625,7 @@ function applyPlanNodeResult(node: FlowNode, result: ExecutePlanNodeResult | und
     node.error = "";
   } else if (node.kind === "fields" || node.kind === "condition" || node.kind === "source") {
     node.preview = node.kind === "source" && node.sourceFormat === "list"
-      ? listPreviewContent(result)
+      ? listPreviewContent(result.preview)
       : JSON.stringify(result.preview, null, 2);
     node.previewStats = planStats(result);
     node.previewError = "";
@@ -1580,7 +1635,7 @@ function applyPlanNodeResult(node: FlowNode, result: ExecutePlanNodeResult | und
 }
 
 async function executeGraph() {
-  if (!client) return;
+  if (!client || !runtimeBackend) return;
   const token = ++executionToken;
   const startedAt = performance.now();
   clearExecutionResults();
@@ -1666,7 +1721,7 @@ async function executeGraph() {
       legacyNodes,
       previewLimit: 50,
     });
-    const reply = await client.request<ExecutePlanResponse>(request);
+    const reply = await runtimeBackend.run(request);
     if (token !== executionToken) return;
     engineVersion.value = reply.engineVersion;
     executionResponse.value = reply.response;
@@ -1741,6 +1796,7 @@ onMounted(async () => {
     ? savedTheme
     : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   client = new JsonEngineClient();
+  runtimeBackend = new RustWasmBackend(client);
   if (surface.value) {
     renderer = new FlowSurfaceRenderer(surface.value);
     gpuMode.value = await renderer.init();
@@ -2292,7 +2348,14 @@ onBeforeUnmount(() => {
               </div>
               <div class="node-inspector-badges">
                 <small v-if="inspectorInput.itemCount !== undefined">{{ inspectorInput.itemCount }} строк</small>
-                <small v-if="inspectorInput.truncated" class="is-truncated">первые 50</small>
+                <small v-if="inspectorInput.truncated" class="is-truncated">первые {{ inspectorInput.shownCount ?? 50 }}</small>
+                <button
+                  v-if="inspectorInput.expandNodeId"
+                  type="button"
+                  class="node-inspector-expand"
+                  :disabled="expandingNodeId !== ''"
+                  @click="expandNodePreview(inspectorInput.expandNodeId)"
+                >{{ expandingNodeId === inspectorInput.expandNodeId ? "Загружаю…" : "Показать больше" }}</button>
               </div>
             </div>
             <JsonCodeEditor
@@ -2317,7 +2380,14 @@ onBeforeUnmount(() => {
               </div>
               <div class="node-inspector-badges">
                 <small v-if="inspectorOutput.itemCount !== undefined">{{ inspectorOutput.itemCount }} строк</small>
-                <small v-if="inspectorOutput.truncated" class="is-truncated">первые 50</small>
+                <small v-if="inspectorOutput.truncated" class="is-truncated">первые {{ inspectorOutput.shownCount ?? 50 }}</small>
+                <button
+                  v-if="inspectorOutput.expandNodeId"
+                  type="button"
+                  class="node-inspector-expand"
+                  :disabled="expandingNodeId !== ''"
+                  @click="expandNodePreview(inspectorOutput.expandNodeId)"
+                >{{ expandingNodeId === inspectorOutput.expandNodeId ? "Загружаю…" : "Показать больше" }}</button>
               </div>
             </div>
             <JsonCodeEditor
