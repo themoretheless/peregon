@@ -25,7 +25,8 @@ import {
   type ExecutePlanNodeResult,
   type ExecutePlanResponse,
 } from "./runtime/execute-plan.ts";
-import { RustWasmBackend } from "./runtime/rust-backend.ts";
+import { RustWasmBackend, selectStaleDatasets } from "./runtime/rust-backend.ts";
+import type { RuntimeDatasetRef } from "./runtime/contracts.ts";
 import { inputFieldsForNode, outputFieldsForNode } from "./runtime/schema-state.ts";
 import {
   createUiFilterGroup,
@@ -342,7 +343,7 @@ const analyses = reactive<Record<string, AnalyzeSuccess | undefined>>({});
 const executionResults = reactive<Record<string, ExecutePlanNodeResult | undefined>>({});
 const executionResponse = ref<ExecutePlanResponse | null>(null);
 const expandedPreviews = reactive<Record<string, ExpandedPreview | undefined>>({});
-const expandingNodeId = ref("");
+const expandingNodes = reactive<Record<string, boolean>>({});
 const board = ref<HTMLElement | null>(null);
 const surface = ref<HTMLCanvasElement | null>(null);
 const panX = ref(0);
@@ -366,6 +367,7 @@ const theme = ref<Theme>("light");
 
 let client: JsonEngineClient | null = null;
 let runtimeBackend: RustWasmBackend | null = null;
+let retainedDatasets: RuntimeDatasetRef[] = [];
 let renderer: FlowSurfaceRenderer | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let renderFrame = 0;
@@ -503,10 +505,30 @@ function expandableNodeId(nodeId: string | undefined): string | undefined {
 
 const FULL_PREVIEW_LIMIT = 1000;
 
+/**
+ * Frees datasets the finished run stopped referencing. Releasing after the run
+ * keeps content-addressed ids that both runs produce alive; datasets from a run
+ * superseded mid-flight are reclaimed by the backend's own LRU instead.
+ */
+function releaseStaleDatasets(nextRefs: readonly RuntimeDatasetRef[]) {
+  const stale = selectStaleDatasets(retainedDatasets, nextRefs);
+  retainedDatasets = [...nextRefs];
+  if (!stale.length || !runtimeBackend) return;
+  // A failed release only delays reclamation to the LRU, so it stays silent.
+  void runtimeBackend.release(stale).catch(() => {});
+}
+
+function datasetRefsFrom(response: ExecutePlanResponse): RuntimeDatasetRef[] {
+  if (!runtimeBackend) return [];
+  const backend = runtimeBackend;
+  return Object.values(response.nodes).flatMap((result) =>
+    result.ok && result.dataset ? [backend.datasetRef(result.dataset)] : []);
+}
+
 async function expandNodePreview(nodeId: string) {
   const dataset = executionResults[nodeId]?.dataset;
-  if (!dataset || !runtimeBackend || expandingNodeId.value) return;
-  expandingNodeId.value = nodeId;
+  if (!dataset || !runtimeBackend || expandingNodes[nodeId]) return;
+  expandingNodes[nodeId] = true;
   try {
     const sample = await runtimeBackend.preview(runtimeBackend.datasetRef(dataset), FULL_PREVIEW_LIMIT);
     expandedPreviews[nodeId] = {
@@ -517,7 +539,7 @@ async function expandNodePreview(nodeId: string) {
   } catch (error) {
     setNotice(error instanceof Error ? error.message : "Не удалось загрузить полные данные");
   } finally {
-    expandingNodeId.value = "";
+    delete expandingNodes[nodeId];
   }
 }
 
@@ -1706,7 +1728,10 @@ async function executeGraph() {
         node.previewError = "Подключите источник данных";
       }
     }
-    if (!activeNodes.length) return;
+    if (!activeNodes.length) {
+      releaseStaleDatasets([]);
+      return;
+    }
 
     const legacyNodes = activeNodes.map((node) => {
       if (node.kind !== "source") return node;
@@ -1734,8 +1759,10 @@ async function executeGraph() {
       executionResults[node.id] = result;
       applyPlanNodeResult(node, result, reply.response.sink_outputs[node.id]);
     }
+    releaseStaleDatasets(datasetRefsFrom(reply.response));
   } catch (error) {
     setNotice(error instanceof Error ? error.message : "Не удалось выполнить граф");
+    if (token === executionToken) releaseStaleDatasets([]);
   } finally {
     if (token === executionToken) {
       isRunning.value = false;
@@ -2353,9 +2380,9 @@ onBeforeUnmount(() => {
                   v-if="inspectorInput.expandNodeId"
                   type="button"
                   class="node-inspector-expand"
-                  :disabled="expandingNodeId !== ''"
+                  :disabled="expandingNodes[inspectorInput.expandNodeId]"
                   @click="expandNodePreview(inspectorInput.expandNodeId)"
-                >{{ expandingNodeId === inspectorInput.expandNodeId ? "Загружаю…" : "Показать больше" }}</button>
+                >{{ expandingNodes[inspectorInput.expandNodeId] ? "Загружаю…" : "Показать больше" }}</button>
               </div>
             </div>
             <JsonCodeEditor
@@ -2385,9 +2412,9 @@ onBeforeUnmount(() => {
                   v-if="inspectorOutput.expandNodeId"
                   type="button"
                   class="node-inspector-expand"
-                  :disabled="expandingNodeId !== ''"
+                  :disabled="expandingNodes[inspectorOutput.expandNodeId]"
                   @click="expandNodePreview(inspectorOutput.expandNodeId)"
-                >{{ expandingNodeId === inspectorOutput.expandNodeId ? "Загружаю…" : "Показать больше" }}</button>
+                >{{ expandingNodes[inspectorOutput.expandNodeId] ? "Загружаю…" : "Показать больше" }}</button>
               </div>
             </div>
             <JsonCodeEditor

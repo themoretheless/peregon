@@ -43,6 +43,23 @@ export interface RuntimeBackend {
   release(refs: readonly RuntimeDatasetRef[]): Promise<void>;
 }
 
+/**
+ * Datasets a finished run no longer references. Equal node outputs share one
+ * content-addressed id, so residency is decided per id rather than per node.
+ */
+export const selectStaleDatasets = (
+  previous: readonly RuntimeDatasetRef[],
+  next: readonly RuntimeDatasetRef[],
+): RuntimeDatasetRef[] => {
+  const retained = new Set(next.map((ref) => ref.datasetId));
+  const seen = new Set<string>();
+  return previous.filter((ref) => {
+    if (retained.has(ref.datasetId) || seen.has(ref.datasetId)) return false;
+    seen.add(ref.datasetId);
+    return true;
+  });
+};
+
 const SUPPORTED_NODE_TYPES = new Set(["source", "filter", "project", "sink"]);
 
 const RUNTIME_FIELD_KINDS = new Set<RuntimeFieldKind>([

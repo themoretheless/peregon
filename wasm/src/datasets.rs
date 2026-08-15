@@ -101,6 +101,19 @@ pub(crate) fn register(kind: &'static str, items: &[Value]) -> Option<Value> {
     Some(reference)
 }
 
+/// Reports whether a dataset is still resident, refreshing its LRU position.
+/// Lets a cached step keep its existing reference instead of re-serializing data.
+pub(crate) fn retain(dataset_id: &str) -> bool {
+    DATASETS.with(|datasets| {
+        let mut store = datasets.borrow_mut();
+        if !store.entries.contains_key(dataset_id) {
+            return false;
+        }
+        touch(&mut store, dataset_id);
+        true
+    })
+}
+
 /// Returns a bounded sample of a stored dataset in the engine response shape.
 pub(crate) fn preview(dataset_id: &str, limit: Option<usize>) -> Value {
     let limit = limit.unwrap_or(DEFAULT_PREVIEW_LIMIT).min(MAX_PREVIEW_LIMIT);
@@ -208,6 +221,24 @@ mod tests {
         }
         assert_eq!(preview(&ids[0], None)["ok"], false);
         assert_eq!(preview(ids.last().unwrap(), None)["ok"], true);
+    }
+
+    #[test]
+    fn retain_reports_residency_and_protects_from_eviction() {
+        clear();
+        let kept = register("records", &[json!({"unique": "kept"})]).unwrap();
+        let kept_id = kept["dataset_id"].as_str().unwrap().to_owned();
+        let doomed = register("records", &[json!({"unique": "doomed"})]).unwrap();
+        let doomed_id = doomed["dataset_id"].as_str().unwrap().to_owned();
+
+        // Every later insert re-touches `kept`, so `doomed` becomes the oldest entry.
+        for index in 0..MAX_DATASET_ENTRIES {
+            assert!(retain(&kept_id));
+            register("records", &[json!({"filler": index})]).unwrap();
+        }
+        assert!(retain(&kept_id));
+        assert!(!retain(&doomed_id));
+        assert!(!retain("ds-never-registered"));
     }
 
     #[test]

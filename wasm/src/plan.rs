@@ -364,17 +364,7 @@ fn execute_step_cached(
     if let Some(identity) = cache_identity.as_deref() {
         if let Some(mut hit) = EXECUTION_CACHE.with(|cache| cache.borrow_mut().get(identity)) {
             set_cached(&mut hit.response, true);
-            // A cached response may reference a dataset that was evicted since;
-            // re-registering keeps the returned dataset ref resolvable.
-            if let Some(data) = hit.data.as_deref() {
-                let dataset = super::datasets::register("records", data);
-                if let Some(object) = hit.response.as_object_mut() {
-                    object.insert(
-                        "dataset".to_owned(),
-                        dataset.unwrap_or(Value::Null),
-                    );
-                }
-            }
+            refresh_dataset(&mut hit);
             return hit;
         }
     }
@@ -392,6 +382,28 @@ fn execute_step_cached(
 fn set_cached(response: &mut Value, cached: bool) {
     if let Some(object) = response.as_object_mut() {
         object.insert("cached".to_owned(), Value::Bool(cached));
+    }
+}
+
+/// Keeps a cache hit's dataset reference resolvable. The store evicts
+/// independently of the plan cache, so a still-resident dataset is only
+/// touched, and an evicted one is registered again from the retained data.
+fn refresh_dataset(outcome: &mut StepOutcome) {
+    let Some(data) = outcome.data.as_deref() else {
+        return;
+    };
+    let resident = outcome
+        .response
+        .get("dataset")
+        .and_then(|dataset| dataset.get("dataset_id"))
+        .and_then(Value::as_str)
+        .is_some_and(super::datasets::retain);
+    if resident {
+        return;
+    }
+    let dataset = super::datasets::register("records", data).unwrap_or(Value::Null);
+    if let Some(object) = outcome.response.as_object_mut() {
+        object.insert("dataset".to_owned(), dataset);
     }
 }
 

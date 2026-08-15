@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RustWasmBackend } from "../src/runtime/index.ts";
+import { RustWasmBackend, selectStaleDatasets } from "../src/runtime/index.ts";
 
 const planRequest = {
   action: "execute_plan",
@@ -206,6 +206,43 @@ test("preview surfaces engine errors for evicted datasets", async () => {
   })));
   const ref = backend.datasetRef({ dataset_id: "ds-gone", kind: "records", content_hash: "gone" });
   await assert.rejects(() => backend.preview(ref, 10), /выгружены из памяти/u);
+});
+
+test("stale selection keeps datasets the next run still references", () => {
+  const ref = (datasetId) => ({
+    datasetId,
+    kind: "records",
+    contentHash: datasetId.slice(3),
+    backendId: "rust-wasm",
+    sessionId: "s1",
+  });
+
+  assert.deepEqual(
+    selectStaleDatasets([ref("ds-a"), ref("ds-b")], [ref("ds-b"), ref("ds-c")]).map((r) => r.datasetId),
+    ["ds-a"],
+  );
+  assert.deepEqual(selectStaleDatasets([], [ref("ds-a")]), []);
+  assert.deepEqual(
+    selectStaleDatasets([ref("ds-a"), ref("ds-b")], []).map((r) => r.datasetId),
+    ["ds-a", "ds-b"],
+  );
+});
+
+test("stale selection releases a shared dataset id once and only when unused", () => {
+  const ref = (datasetId) => ({
+    datasetId,
+    kind: "records",
+    contentHash: "same",
+    backendId: "rust-wasm",
+    sessionId: "s1",
+  });
+
+  // Two nodes with identical output share one content-addressed id.
+  assert.deepEqual(
+    selectStaleDatasets([ref("ds-shared"), ref("ds-shared")], []).map((r) => r.datasetId),
+    ["ds-shared"],
+  );
+  assert.deepEqual(selectStaleDatasets([ref("ds-shared"), ref("ds-shared")], [ref("ds-shared")]), []);
 });
 
 test("release sends only this session's refs and skips empty requests", async () => {
