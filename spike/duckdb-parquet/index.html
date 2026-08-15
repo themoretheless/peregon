@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Spike: DuckDB parquet → aggregate → preview</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px; max-width: 900px; }
+      h1 { font-size: 16px; }
+      pre { background: #f4f4f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+      #status { color: #0a7; }
+    </style>
+  </head>
+  <body>
+    <h1>Spike: source.parquet → transform.aggregate → preview</h1>
+    <p>
+      Измеряет размер assets, cold start, время первого preview и память DuckDB-Wasm.
+      Размер выборки задаётся параметром <code>?rows=</code> (по умолчанию 200000).
+    </p>
+    <p id="status">Запуск…</p>
+    <pre id="output"></pre>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
