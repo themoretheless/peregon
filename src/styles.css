@@ -2021,6 +2021,11 @@ textarea.node-result-output,
   white-space: nowrap;
 }
 
+.node-inspector-badges small.is-duration {
+  color: #9aa4b8;
+  background: rgba(120, 132, 158, 0.18);
+}
+
 .node-inspector-badges small.is-truncated {
   color: #e5b67f;
   background: rgba(208, 106, 53, 0.18);

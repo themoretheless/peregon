@@ -317,7 +317,9 @@ pub(crate) fn execute(plan: ExecutionPlan) -> Value {
             continue;
         }
 
-        let outcome = execute_step_cached(&step, &states, preview_limit);
+        let started = super::clock::now_ms();
+        let mut outcome = execute_step_cached(&step, &states, preview_limit);
+        set_duration(&mut outcome.response, super::clock::elapsed_ms(started));
         if let Some(output) = outcome.sink_output {
             sink_outputs.insert(node_id.clone(), Value::String(output));
         }
@@ -383,6 +385,16 @@ fn set_cached(response: &mut Value, cached: bool) {
     if let Some(object) = response.as_object_mut() {
         object.insert("cached".to_owned(), Value::Bool(cached));
     }
+}
+
+/// Records what producing this node cost during this run. A cache hit therefore
+/// reports the lookup, not the original computation, which `cached` already marks.
+fn set_duration(response: &mut Value, duration_ms: f64) {
+    let Some(stats) = response.get_mut("stats").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let measured = serde_json::Number::from_f64(duration_ms).unwrap_or_else(|| 0.into());
+    stats.insert("duration_ms".to_owned(), Value::Number(measured));
 }
 
 /// Keeps a cache hit's dataset reference resolvable. The store evicts
@@ -1106,7 +1118,7 @@ fn failure_node(issue: Value, input_schema: Option<Value>) -> Value {
         "input_schema": input_schema,
         "output_schema": null,
         "schema": null,
-        "stats": {"input_items": 0, "output_items": 0, "filtered_out": 0, "skipped_items": 0},
+        "stats": {"input_items": 0, "output_items": 0, "filtered_out": 0, "skipped_items": 0, "duration_ms": 0},
         "diagnostics": [issue],
     })
 }
@@ -1660,6 +1672,36 @@ mod tests {
         assert_eq!(preview["total_items"], 2);
         assert_eq!(preview["items"].as_array().unwrap().len(), 2);
         assert_eq!(preview["items"][0]["id"], "A1");
+    }
+
+    #[test]
+    fn every_node_reports_its_own_execution_time() {
+        clear_cache();
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                source(),
+                {"node_id":"filter","node_type":"filter","input":{"node_id":"source"},"config":{"filters":[{"field":"state","operator":"equal","value":"1"}]}},
+                {"node_id":"bad-project","node_type":"project","input":{"node_id":"filter"},"config":{"fields":["removed"]}}
+            ]
+        }));
+        for node_id in ["source", "filter", "bad-project"] {
+            let duration = &result["nodes"][node_id]["stats"]["duration_ms"];
+            assert!(
+                duration.as_f64().is_some_and(|value| value >= 0.0),
+                "node {node_id} reported {duration}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_node_id_failure_still_carries_a_duration() {
+        let result = run(json!({
+            "version": 1,
+            "steps": [source(), source()]
+        }));
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["nodes"]["source"]["stats"]["duration_ms"], 0);
     }
 
     #[test]

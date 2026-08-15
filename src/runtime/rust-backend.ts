@@ -259,7 +259,7 @@ export class RustWasmBackend implements RuntimeBackend {
         outputItems: result.stats.output_items,
         skippedItems: result.stats.skipped_items,
         errorItems: 0,
-        durationMs: 0,
+        durationMs: result.stats.duration_ms ?? 0,
         cacheHit: result.cached,
       },
       diagnostics: toDiagnostics(result, step.node_id),

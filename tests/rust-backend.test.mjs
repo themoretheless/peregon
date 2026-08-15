@@ -33,7 +33,7 @@ const planRequest = {
   },
 };
 
-const stats = { input_items: 2, output_items: 2, filtered_out: 0, skipped_items: 0 };
+const stats = { input_items: 2, output_items: 2, filtered_out: 0, skipped_items: 0, duration_ms: 4.5 };
 
 const wireResponse = {
   ok: true,
@@ -128,11 +128,28 @@ test("execute converts wire results into contract node results with session-scop
     truncated: true,
   });
   assert.equal(source.stats.cacheHit, false);
+  assert.equal(source.stats.durationMs, 4.5);
 
   assert.equal(sink.status, "cached");
   assert.equal(sink.stats.cacheHit, true);
   const textOutput = sink.outputs.find((output) => output.portId === "output");
   assert.deepEqual(textOutput.preview, { items: ["id\nA1"], totalItems: 1, truncated: false });
+});
+
+test("execute defaults duration to zero when the engine omits it", async () => {
+  const legacy = {
+    ...wireResponse,
+    nodes: {
+      ...wireResponse.nodes,
+      source: {
+        ...wireResponse.nodes.source,
+        stats: { input_items: 2, output_items: 2, filtered_out: 0, skipped_items: 0 },
+      },
+    },
+  };
+  const backend = new RustWasmBackend(createFakeClient(() => legacy));
+  const [source] = await collect(backend.execute(planRequest));
+  assert.equal(source.stats.durationMs, 0);
 });
 
 test("execute marks failed and missing nodes", async () => {

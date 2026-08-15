@@ -65,13 +65,14 @@ const isVectorSink = (step: ExecutePlanStep): boolean =>
 export const isValueVectorPlan = (request: ExecutePlanRequest): boolean =>
   request.plan.steps.length > 0 && request.plan.steps.every((step) => isVectorSource(step) || isVectorSink(step));
 
-const stats = (input: number, output: number, values = output) => ({
+const stats = (input: number, output: number, durationMs: number, values = output) => ({
   input_items: input,
   output_items: output,
   filtered_out: 0,
   skipped_items: 0,
   empty_values: 0,
   values,
+  duration_ms: durationMs,
 });
 
 const nodeResult = (
@@ -80,6 +81,7 @@ const nodeResult = (
   outputSchema: typeof vectorSchema | null,
   total: number,
   previewLimit: number,
+  startedAt: number,
 ): ExecutePlanNodeResult => ({
   ok: true,
   cached: false,
@@ -88,7 +90,7 @@ const nodeResult = (
   schema: outputSchema,
   input_schema: inputSchema,
   output_schema: outputSchema,
-  stats: stats(inputSchema ? total : 0, total),
+  stats: stats(inputSchema ? total : 0, total, performance.now() - startedAt),
   diagnostics: [],
 });
 
@@ -171,6 +173,7 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
 
   try {
     for (const step of request.plan.steps) {
+      const startedAt = performance.now();
       if (isVectorSource(step)) {
         const tokens = parseValueVector(step.config.data);
         const tableName = `value_vector_${requestId}_${createdTables.length}`;
@@ -178,7 +181,7 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
         createdTables.push(tableName);
         const values = await withTimeout("Чтение вектора из DuckDB", orderedValues(connection, tableName));
         states.set(step.node_id, { tableName, tokens });
-        nodes[step.node_id] = nodeResult(values, null, vectorSchema, tokens.length, request.plan.preview_limit);
+        nodes[step.node_id] = nodeResult(values, null, vectorSchema, tokens.length, request.plan.preview_limit, startedAt);
         continue;
       }
 
@@ -194,7 +197,7 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
           step.config.strip_outer_quotes,
           step.config.skip_empty,
         ));
-        nodes[step.node_id] = nodeResult(values, vectorSchema, null, parent.tokens.length, request.plan.preview_limit);
+        nodes[step.node_id] = nodeResult(values, vectorSchema, null, parent.tokens.length, request.plan.preview_limit, startedAt);
         sinkOutputs[step.node_id] = output;
       }
     }

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use themoretheless_tokenizer::{tokenize_json, TokenKind};
 use wasm_bindgen::prelude::*;
 
+mod clock;
 mod datasets;
 mod plan;
 

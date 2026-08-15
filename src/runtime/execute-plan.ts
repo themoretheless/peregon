@@ -141,6 +141,8 @@ export interface ExecutePlanNodeStats {
   readonly skipped_items: number;
   readonly empty_values?: number;
   readonly values?: number;
+  /** Wall time this run spent producing the node; a cache hit reports the lookup. */
+  readonly duration_ms?: number;
 }
 
 export interface ExecutePlanFieldSchema {

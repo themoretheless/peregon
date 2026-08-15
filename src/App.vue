@@ -139,6 +139,8 @@ interface InspectorPane {
   shownCount?: number;
   /** Node whose retained dataset can be loaded beyond the inline preview. */
   expandNodeId?: string;
+  /** Pre-formatted execution time of the node that produced this pane. */
+  duration?: string;
   error?: string;
 }
 
@@ -146,6 +148,12 @@ interface ExpandedPreview {
   items: JsonValue[];
   totalItems: number;
   truncated: boolean;
+}
+
+/** Formats a node's own execution time; browsers coarsen sub-millisecond values. */
+function formatNodeDuration(durationMs: number | undefined): string | undefined {
+  if (durationMs === undefined) return undefined;
+  return durationMs < 1 ? "<1 мс" : `${Math.round(durationMs)} мс`;
 }
 
 const SAMPLE_JSON = `{
@@ -614,6 +622,7 @@ function inspectorOutputFor(node: FlowNode): InspectorPane {
     itemCount: result?.stats.output_items,
     ...paneTruncationFor(node.id, result),
     expandNodeId: expandableNodeId(node.id),
+    duration: result?.ok ? formatNodeDuration(result.stats.duration_ms) : undefined,
     error,
   };
 }
@@ -2407,6 +2416,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="node-inspector-badges">
                 <small v-if="inspectorOutput.itemCount !== undefined">{{ inspectorOutput.itemCount }} строк</small>
+                <small v-if="inspectorOutput.duration" class="is-duration">{{ inspectorOutput.duration }}</small>
                 <small v-if="inspectorOutput.truncated" class="is-truncated">первые {{ inspectorOutput.shownCount ?? 50 }}</small>
                 <button
                   v-if="inspectorOutput.expandNodeId"
