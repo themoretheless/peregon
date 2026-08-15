@@ -79,6 +79,19 @@ test("execution plan binds every chain step to its direct parent output", () => 
   );
 });
 
+test("execution plan asks for an unbounded preview unless a limit is given", () => {
+  const document = graph(
+    [source(), node("project", "transform.project", { fields: ["id"] })],
+    [connection("source-project", "source", "records", "project")],
+  );
+
+  assert.equal(buildExecutionPlanRequest(document).plan.preview_limit, 0xffff_ffff);
+  assert.equal(
+    buildExecutionPlanRequest(document, { previewLimit: 4_000_000_000 }).plan.preview_limit,
+    4_000_000_000,
+  );
+});
+
 test("execution plan preserves fan-out as independent direct-parent bindings", () => {
   const document = graph(
     [

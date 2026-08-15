@@ -131,7 +131,6 @@ interface InspectorPane {
   language: string;
   emptyMessage: string;
   itemCount?: number;
-  truncated?: boolean;
   error?: string;
 }
 
@@ -509,7 +508,6 @@ function inspectorInputFor(node: FlowNode): InspectorPane {
       ? "На входе нет строк"
       : isRunning.value ? "Вычисляю вход…" : "Запустите граф, чтобы увидеть вход",
     itemCount: ownResult?.stats.input_items ?? upstreamResult?.stats.output_items,
-    truncated: upstreamResult?.preview_truncated,
     error: resultError(upstreamResult),
   };
 }
@@ -536,7 +534,6 @@ function inspectorOutputFor(node: FlowNode): InspectorPane {
       ? "На выходе нет строк"
       : isRunning.value ? "Вычисляю результат…" : "Запустите граф, чтобы увидеть результат",
     itemCount: result?.stats.output_items,
-    truncated: result?.preview_truncated,
     error,
   };
 }
@@ -1664,7 +1661,6 @@ async function executeGraph() {
     });
     const request = buildExecutionPlanRequest(toGraphV2(activeNodes, activeEdges), {
       legacyNodes,
-      previewLimit: 50,
     });
     const reply = await client.request<ExecutePlanResponse>(request);
     if (token !== executionToken) return;
@@ -2292,7 +2288,6 @@ onBeforeUnmount(() => {
               </div>
               <div class="node-inspector-badges">
                 <small v-if="inspectorInput.itemCount !== undefined">{{ inspectorInput.itemCount }} строк</small>
-                <small v-if="inspectorInput.truncated" class="is-truncated">первые 50</small>
               </div>
             </div>
             <JsonCodeEditor
@@ -2317,7 +2312,6 @@ onBeforeUnmount(() => {
               </div>
               <div class="node-inspector-badges">
                 <small v-if="inspectorOutput.itemCount !== undefined">{{ inspectorOutput.itemCount }} строк</small>
-                <small v-if="inspectorOutput.truncated" class="is-truncated">первые 50</small>
               </div>
             </div>
             <JsonCodeEditor
@@ -2334,10 +2328,6 @@ onBeforeUnmount(() => {
             </div>
           </section>
         </div>
-
-        <footer class="node-inspector-note">
-          Промежуточные данные показываются превью до 50 строк; итоговый выход — полностью.
-        </footer>
       </aside>
 
       <div class="canvas-status" aria-live="polite" @pointerdown.stop>

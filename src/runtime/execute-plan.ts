@@ -356,8 +356,13 @@ const sinkConfig = (
   };
 };
 
+// «Без лимита» для wasm32: usize там 32-битный, поэтому максимум — u32::MAX.
+const UNLIMITED_PREVIEW = 0xffff_ffff;
+
 const clampPreviewLimit = (value: number | undefined): number =>
-  Number.isFinite(value) ? Math.max(0, Math.min(100, Math.trunc(value as number))) : 50;
+  Number.isFinite(value)
+    ? Math.max(0, Math.min(UNLIMITED_PREVIEW, Math.trunc(value as number)))
+    : UNLIMITED_PREVIEW;
 
 /**
  * Compiles a validated Graph v2 snapshot into the stable snake_case wire shape

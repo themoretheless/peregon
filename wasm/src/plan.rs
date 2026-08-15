@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 
-const DEFAULT_PREVIEW_LIMIT: usize = 20;
-const MAX_PREVIEW_LIMIT: usize = 100;
+// План без preview_limit отдаёт превью целиком, как и план от клиента.
+const DEFAULT_PREVIEW_LIMIT: usize = usize::MAX;
 const MAX_EXPRESSION_DEPTH: usize = 32;
 const MAX_EXPRESSION_NODES: usize = 256;
 const MAX_FILTER_PATH_SEGMENTS: usize = 64;
@@ -290,7 +290,7 @@ pub(crate) fn execute(plan: ExecutionPlan) -> Value {
         });
     }
 
-    let preview_limit = plan.preview_limit.min(MAX_PREVIEW_LIMIT);
+    let preview_limit = plan.preview_limit;
     let mut states: HashMap<String, NodeState> = HashMap::new();
     let mut nodes = Map::new();
     let mut sink_outputs = Map::new();
@@ -1485,6 +1485,23 @@ mod tests {
         );
         assert_eq!(result["nodes"]["project"]["preview"][0]["id"], "A1");
         assert_eq!(result["sink_outputs"]["sink"], "id;name\nA1;Москва");
+    }
+
+    #[test]
+    fn preview_is_unbounded_beyond_the_former_hard_cap() {
+        let rows: Vec<Value> = (0..250).map(|index| json!({"id": index.to_string()})).collect();
+        let result = run(json!({
+            "version": 1,
+            "steps": [
+                {"node_id":"source","node_type":"source","config":{"data":json!(rows).to_string(),"format":"json","path":""}}
+            ]
+        }));
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            result["nodes"]["source"]["preview"].as_array().unwrap().len(),
+            250
+        );
+        assert_eq!(result["nodes"]["source"]["preview_truncated"], false);
     }
 
     #[test]
