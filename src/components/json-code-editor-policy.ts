@@ -7,6 +7,35 @@ export type EditorEol = "\n" | "\r\n" | "\r";
 export const MAX_HIGHLIGHT_SOURCE_LENGTH = 128 * 1024;
 export const MAX_HIGHLIGHT_TOKENS = 20_000;
 
+// Node previews are not truncated, so a gutter built from one element per line
+// would grow with the dataset. Numbering is emitted as a single text node
+// instead, and abandoned entirely once the count stops being readable.
+export const MAX_GUTTER_LINES = 100_000;
+
+/** Counts lines the way `split("\n").length` would, without allocating them. */
+export function countLines(value: string): number {
+  let lines = 1;
+  for (let index = value.indexOf("\n"); index !== -1; index = value.indexOf("\n", index + 1)) {
+    lines += 1;
+  }
+  return lines;
+}
+
+/**
+ * Renders line numbers as one newline-separated block. The gutter is a `<pre>`
+ * whose numbers are laid out by its own line breaks, so this matches an
+ * element-per-line gutter exactly while keeping the DOM at a single node.
+ */
+export function gutterText(lineCount: number, maxLines = MAX_GUTTER_LINES): string {
+  if (lineCount > maxLines) return "";
+
+  let text = "";
+  for (let line = 1; line <= lineCount; line += 1) {
+    text += line === 1 ? "1" : `\n${line}`;
+  }
+  return text;
+}
+
 export function dominantEol(value: string, fallback: EditorEol = "\n"): EditorEol {
   const counts = new Map<EditorEol, number>();
   const order: EditorEol[] = [];

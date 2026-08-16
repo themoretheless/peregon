@@ -1182,10 +1182,6 @@ textarea:focus-visible {
   font: 9.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.json-code-gutter span {
-  display: block;
-}
-
 .json-code-highlight,
 .json-code-textarea {
   position: absolute;
@@ -1837,10 +1833,6 @@ textarea:focus-visible {
   background: #101416;
   text-align: right;
   user-select: none;
-}
-
-.plain-text-gutter span {
-  display: block;
 }
 
 .plain-text-content {

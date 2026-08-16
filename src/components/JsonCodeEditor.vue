@@ -9,8 +9,10 @@ import {
 } from "@peregon/syntax-engine";
 import {
   canBuildSyntaxSnapshot,
+  countLines,
   dominantEol,
   exceedsHighlightTokenLimit,
+  gutterText,
   withEditorEol,
   type EditorEol,
 } from "./json-code-editor-policy.ts";
@@ -46,10 +48,7 @@ let contentRevision = 1;
 let syntaxDocument: SyntaxDocument<unknown> | null = null;
 const renderedValue = shallowRef(currentValue);
 const textareaValue = computed(() => withEditorEol(renderedValue.value, "\n"));
-const lineNumbers = computed(() => Array.from(
-  { length: Math.max(1, textareaValue.value.split("\n").length) },
-  (_, index) => index + 1,
-));
+const lineNumbers = computed(() => gutterText(countLines(textareaValue.value)));
 const lines = shallowRef<readonly TokenizedLine[]>([]);
 const renderSyntax = ref(false);
 const largeFileMode = ref(false);
@@ -231,10 +230,7 @@ function handleKeydown(event: KeyboardEvent) {
         >Форматировать</button>
       </div>
     </div>
-    <pre ref="gutter" class="json-code-gutter" aria-hidden="true"><span
-      v-for="number in lineNumbers"
-      :key="number"
-    >{{ number }}</span></pre>
+    <pre ref="gutter" class="json-code-gutter" aria-hidden="true">{{ lineNumbers }}</pre>
     <pre
       v-if="readonly"
       ref="readonlyContent"

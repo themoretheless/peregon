@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { countLines, gutterText } from "./json-code-editor-policy.ts";
 
 const props = defineProps<{
   value: string;
@@ -11,10 +12,8 @@ const gutter = ref<HTMLElement | null>(null);
 const copied = ref(false);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
-const lineNumbers = computed(() => Array.from(
-  { length: Math.max(1, props.value.split("\n").length) },
-  (_, index) => index + 1,
-));
+const lineCount = computed(() => countLines(props.value));
+const lineNumbers = computed(() => gutterText(lineCount.value));
 
 function syncScroll() {
   if (content.value && gutter.value) gutter.value.scrollTop = content.value.scrollTop;
@@ -44,7 +43,7 @@ async function copyAll() {
 <template>
   <div class="plain-text-viewer node-result-output">
     <div class="plain-text-toolbar">
-      <span>Текст · {{ lineNumbers.length }} строк</span>
+      <span>Текст · {{ lineCount }} строк</span>
       <button
         type="button"
         title="Копировать весь текст"
@@ -52,10 +51,7 @@ async function copyAll() {
         @click.stop="copyAll"
       >{{ copied ? "Скопировано" : "Копировать всё" }}</button>
     </div>
-    <pre ref="gutter" class="plain-text-gutter" aria-hidden="true"><span
-      v-for="number in lineNumbers"
-      :key="number"
-    >{{ number }}</span></pre>
+    <pre ref="gutter" class="plain-text-gutter" aria-hidden="true">{{ lineNumbers }}</pre>
     <pre
       ref="content"
       class="plain-text-content"
