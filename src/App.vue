@@ -6,6 +6,8 @@ import {
   onMounted,
   reactive,
   ref,
+  shallowReactive,
+  shallowRef,
   watch,
 } from "vue";
 import { JsonEngineClient } from "./engine/client";
@@ -24,6 +26,7 @@ import {
   type ExecutePlanNodeResult,
   type ExecutePlanResponse,
 } from "./runtime/execute-plan.ts";
+import { listPreviewContent, previewContent } from "./runtime/preview-content.ts";
 import { inputFieldsForNode, outputFieldsForNode } from "./runtime/schema-state.ts";
 import {
   createUiFilterGroup,
@@ -326,8 +329,11 @@ const edges = ref<FlowEdge[]>(initialPipeline.edges);
 const pipelineTitle = ref(initialPipeline.title ?? "Обработка магазинов");
 
 const analyses = reactive<Record<string, AnalyzeSuccess | undefined>>({});
-const executionResults = reactive<Record<string, ExecutePlanNodeResult | undefined>>({});
-const executionResponse = ref<ExecutePlanResponse | null>(null);
+// Results are replaced whole, never patched in place, and now carry every row
+// of a preview. Keeping them shallow means reading one does not proxy the rows
+// and does not register a dependency per field walked while serializing.
+const executionResults = shallowReactive<Record<string, ExecutePlanNodeResult | undefined>>({});
+const executionResponse = shallowRef<ExecutePlanResponse | null>(null);
 const board = ref<HTMLElement | null>(null);
 const surface = ref<HTMLCanvasElement | null>(null);
 const panX = ref(0);
@@ -448,20 +454,6 @@ function nodeById(id: string) {
 }
 
 const inspectedNode = computed(() => nodeById(inspectedNodeId.value));
-
-function previewContent(result: ExecutePlanNodeResult | undefined) {
-  return result ? JSON.stringify(result.preview, null, 2) : "";
-}
-
-function listPreviewContent(result: ExecutePlanNodeResult | undefined) {
-  if (!result) return "";
-  return result.preview.flatMap((item) => {
-    if (typeof item === "string") return [item];
-    if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
-    const value = (item as Readonly<Record<string, unknown>>).value;
-    return typeof value === "string" ? [value] : [];
-  }).join("\n");
-}
 
 function resultContentForNode(node: FlowNode | undefined, result: ExecutePlanNodeResult | undefined) {
   return node?.kind === "source" && node.sourceFormat === "list"
