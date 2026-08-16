@@ -3,7 +3,7 @@ use super::{
     matches_filters, matches_value, parse_input, FilterCondition, FilterMode, FilterOperator,
     SourceFormat,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -11,6 +11,10 @@ use std::collections::{HashMap, HashSet};
 
 // План без preview_limit отдаёт превью целиком, как и план от клиента.
 const DEFAULT_PREVIEW_LIMIT: usize = usize::MAX;
+// Sinks are terminal: their definition carries no output port, so the UI reads
+// `sink_outputs` and never a sink's own preview. Now that previews are not
+// truncated, building one would copy the whole dataset for nobody.
+const SINK_PREVIEW_LIMIT: usize = 0;
 const MAX_EXPRESSION_DEPTH: usize = 32;
 const MAX_EXPRESSION_NODES: usize = 256;
 const MAX_FILTER_PATH_SEGMENTS: usize = 64;
@@ -384,16 +388,26 @@ fn set_cached(response: &mut Value, cached: bool) {
     }
 }
 
+fn json_bytes<T: Serialize>(value: &T) -> usize {
+    serde_json::to_vec(value).map(|bytes| bytes.len()).unwrap_or(0)
+}
+
 fn approximate_outcome_bytes(outcome: &StepOutcome) -> usize {
-    serde_json::to_vec(&outcome.response)
-        .map(|value| value.len())
-        .unwrap_or(0)
-        + outcome
-            .data
-            .as_ref()
-            .and_then(|value| serde_json::to_vec(value).ok())
-            .map(|value| value.len())
-            .unwrap_or(0)
+    // `response.preview` holds the very rows already counted through `data`
+    // whenever the plan asks for an unbounded preview. Charging the cache for
+    // both halved the effective MAX_CACHE_BYTES budget, so measure the rows
+    // once and let the rest of the response account for itself.
+    let response_bytes = match outcome.response.as_object() {
+        Some(fields) => fields
+            .iter()
+            .filter(|(name, _)| name.as_str() != "preview")
+            .map(|(name, value)| name.len() + json_bytes(value))
+            .sum(),
+        None => json_bytes(&outcome.response),
+    };
+
+    response_bytes
+        + outcome.data.as_ref().map(json_bytes).unwrap_or(0)
         + outcome.sink_output.as_ref().map(String::len).unwrap_or(0)
 }
 
@@ -440,7 +454,7 @@ fn execute_step(
             config,
             ..
         } => with_parent(node_id, input, states, |data, schema| {
-            execute_sink(node_id, data, schema, config, preview_limit)
+            execute_sink(node_id, data, schema, config)
         }),
     }
 }
@@ -915,7 +929,6 @@ fn execute_sink(
     input: &[Value],
     input_schema: &Value,
     config: &SinkConfig,
-    preview_limit: usize,
 ) -> StepOutcome {
     let available = schema_field_set(input_schema);
     let fields: Vec<String> = if config.fields.is_empty() {
@@ -989,7 +1002,7 @@ fn execute_sink(
         input.to_vec(),
         Some(input_schema.clone()),
         None,
-        preview_limit,
+        SINK_PREVIEW_LIMIT,
         stats,
         Some(output),
     )
@@ -1681,6 +1694,52 @@ mod tests {
         assert_eq!(first["nodes"]["bad-project"]["cached"], false);
         assert_eq!(second["nodes"]["bad-project"]["cached"], false);
         assert_eq!(second["nodes"]["source"]["cached"], true);
+    }
+
+    #[test]
+    fn a_sink_reports_its_output_without_copying_the_dataset_into_a_preview() {
+        let result = run(json!({
+            "version": 1,
+            "preview_limit": 4294967295u32,
+            "steps": [
+                source(),
+                {"node_id":"sink","node_type":"sink","input":{"node_id":"source"},"config":{"format":"csv","csv_delimiter":";"}}
+            ]
+        }));
+        assert_eq!(result["ok"], true);
+        // Terminal node: the UI reads sink_outputs, so the preview stays empty
+        // no matter how wide the plan's preview window is.
+        assert_eq!(result["nodes"]["sink"]["preview"], json!([]));
+        assert_eq!(result["nodes"]["sink"]["stats"]["output_items"], 2);
+        assert_eq!(
+            result["sink_outputs"]["sink"],
+            "id;name;state\nA1;Москва;1\nB2;Белгород;0"
+        );
+        // Upstream previews are untouched by the sink's own suppression.
+        assert_eq!(result["nodes"]["source"]["preview"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_unbounded_preview_does_not_charge_the_cache_twice_for_the_same_rows() {
+        clear_cache();
+        // Half of MAX_CACHE_BYTES: cacheable when the rows are counted once,
+        // rejected as oversize when `preview` and `data` are both charged.
+        let payload = "x".repeat(MAX_CACHE_BYTES / 2);
+        let data = json!([{ "payload": payload }]).to_string();
+        let build = || {
+            json!({
+                "version": 1,
+                "preview_limit": 4294967295u32,
+                "steps": [{
+                    "node_id": "source",
+                    "node_type": "source",
+                    "cache_key": "half-budget",
+                    "config": { "data": data, "format": "json" }
+                }]
+            })
+        };
+        assert_eq!(run(build())["nodes"]["source"]["cached"], false);
+        assert_eq!(run(build())["nodes"]["source"]["cached"], true);
     }
 
     #[test]
