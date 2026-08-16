@@ -10,9 +10,8 @@ import type {
   ExecutePlanNodeResult,
   ExecutePlanRequest,
   ExecutePlanResponse,
-  ExecutePlanStep,
-  ExecuteSourceStep,
 } from "../runtime/execute-plan.ts";
+import { isVectorSink, isVectorSource } from "./value-vector-plan.ts";
 import { parseValueVector, type ValueToken } from "./value-vector-parser.ts";
 
 interface VectorState {
@@ -55,15 +54,6 @@ const duckdb = (): Promise<AsyncDuckDB> => {
   })();
   return duckdbPromise;
 };
-
-const isVectorSource = (step: ExecutePlanStep): step is ExecuteSourceStep =>
-  step.node_type === "source" && step.config.format === "list";
-
-const isVectorSink = (step: ExecutePlanStep): boolean =>
-  step.node_type === "sink" && step.config.format === "template";
-
-export const isValueVectorPlan = (request: ExecutePlanRequest): boolean =>
-  request.plan.steps.length > 0 && request.plan.steps.every((step) => isVectorSource(step) || isVectorSink(step));
 
 const stats = (input: number, output: number, values = output) => ({
   input_items: input,

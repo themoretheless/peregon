@@ -84,10 +84,16 @@ export default defineConfig(async () => {
   process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
   process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
 
+  // The engine worker is created with `{ type: "module" }`, and only the ES
+  // worker format supports code-splitting. Under the default IIFE format the
+  // lazily imported DuckDB backend would be inlined into the worker entry.
+  const worker = { format: "es" as const };
+
   if (isGitHubPagesBuild) {
     return {
       base: githubPagesBase(),
       define: { __PEREGON_VERSION_INFO__: JSON.stringify(versionInfo) },
+      worker,
       plugins: [vue({ compiler: vueCompiler })],
     };
   }
@@ -96,6 +102,7 @@ export default defineConfig(async () => {
 
   return {
     define: { __PEREGON_VERSION_INFO__: JSON.stringify(versionInfo) },
+    worker,
     server: isCodexSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
