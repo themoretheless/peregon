@@ -165,6 +165,10 @@ export interface ExecutePlanNodeResult {
   readonly ok: boolean;
   readonly cached: boolean;
   readonly preview: readonly JsonValue[];
+  /**
+   * Only ever true for callers that passed an explicit `previewLimit`. The app
+   * does not, so its previews carry every row and this stays false.
+   */
   readonly preview_truncated: boolean;
   /** @deprecated Compatibility alias for output_schema during the transition. */
   readonly schema: ExecutePlanDataSchema | null;
@@ -356,12 +360,25 @@ const sinkConfig = (
   };
 };
 
-// «Без лимита» для wasm32: usize там 32-битный, поэтому максимум — u32::MAX.
-const UNLIMITED_PREVIEW = 0xffff_ffff;
+/**
+ * The preview window used when a caller asks for no particular one, which is
+ * what the app itself does: node previews are shown in full.
+ *
+ * It is a concrete number rather than `Infinity` because the plan crosses a
+ * JSON boundary into `usize`, and `usize` is 32 bits on wasm32 — anything wider
+ * fails to deserialize instead of meaning "everything".
+ */
+export const UNLIMITED_PREVIEW = 0xffff_ffff;
 
+/**
+ * A preview window is a row count, so only a finite, non-negative number says
+ * anything. Everything else (NaN, negatives, omitted) means "no window asked
+ * for" and yields the full preview; silently returning an empty one instead
+ * would look like a node that produced nothing.
+ */
 const clampPreviewLimit = (value: number | undefined): number =>
-  Number.isFinite(value)
-    ? Math.max(0, Math.min(UNLIMITED_PREVIEW, Math.trunc(value as number)))
+  Number.isFinite(value) && (value as number) >= 0
+    ? Math.min(UNLIMITED_PREVIEW, Math.trunc(value as number))
     : UNLIMITED_PREVIEW;
 
 /**

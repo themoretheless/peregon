@@ -1490,18 +1490,22 @@ mod tests {
     #[test]
     fn preview_is_unbounded_beyond_the_former_hard_cap() {
         let rows: Vec<Value> = (0..250).map(|index| json!({"id": index.to_string()})).collect();
-        let result = run(json!({
-            "version": 1,
-            "steps": [
-                {"node_id":"source","node_type":"source","config":{"data":json!(rows).to_string(),"format":"json","path":""}}
-            ]
-        }));
-        assert_eq!(result["ok"], true);
-        assert_eq!(
-            result["nodes"]["source"]["preview"].as_array().unwrap().len(),
-            250
-        );
-        assert_eq!(result["nodes"]["source"]["preview_truncated"], false);
+        let source = json!({"node_id":"source","node_type":"source","config":{"data":json!(rows).to_string(),"format":"json","path":""}});
+
+        // Both the omitted-field default and the sentinel the client actually
+        // sends: u32::MAX, the widest window a 32-bit usize can carry.
+        for plan in [
+            json!({"version": 1, "steps": [source]}),
+            json!({"version": 1, "preview_limit": 4294967295u32, "steps": [source]}),
+        ] {
+            let result = run(plan);
+            assert_eq!(result["ok"], true);
+            assert_eq!(
+                result["nodes"]["source"]["preview"].as_array().unwrap().len(),
+                250
+            );
+            assert_eq!(result["nodes"]["source"]["preview_truncated"], false);
+        }
     }
 
     #[test]

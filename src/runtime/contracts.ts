@@ -137,7 +137,10 @@ export interface RuntimeStats {
 }
 
 export interface RuntimePreview {
-  /** A bounded sample only; complete data remains in the runtime dataset store. */
+  /**
+   * Bounded only when the caller asked for a bound; complete data remains in
+   * the runtime dataset store either way.
+   */
   items: JsonValue[];
   totalItems: number;
   truncated: boolean;

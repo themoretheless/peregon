@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { UNLIMITED_PREVIEW } from "../src/runtime/execute-plan.ts";
 import {
   buildExecutePlanSchemaState,
   diagnoseStaleNodeFields,
@@ -45,7 +46,7 @@ const request = {
     version: 1,
     graph_id: "schema-contract",
     graph_revision: 1,
-    preview_limit: 20,
+    preview_limit: UNLIMITED_PREVIEW,
     steps: [
       {
         node_id: "source",

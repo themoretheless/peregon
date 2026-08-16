@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ExecutionPlanCompileError,
+  UNLIMITED_PREVIEW,
   buildExecutionPlanRequest,
 } from "../src/runtime/index.ts";
 
@@ -84,12 +85,25 @@ test("execution plan asks for an unbounded preview unless a limit is given", () 
     [source(), node("project", "transform.project", { fields: ["id"] })],
     [connection("source-project", "source", "records", "project")],
   );
+  const limitFor = (options) => buildExecutionPlanRequest(document, options).plan.preview_limit;
 
-  assert.equal(buildExecutionPlanRequest(document).plan.preview_limit, 0xffff_ffff);
-  assert.equal(
-    buildExecutionPlanRequest(document, { previewLimit: 4_000_000_000 }).plan.preview_limit,
-    4_000_000_000,
-  );
+  // usize is 32 bits on wasm32, so the sentinel is the widest window the engine
+  // can deserialize at all.
+  assert.equal(UNLIMITED_PREVIEW, 0xffff_ffff);
+  assert.equal(limitFor(undefined), UNLIMITED_PREVIEW);
+  assert.equal(limitFor({}), UNLIMITED_PREVIEW);
+
+  assert.equal(limitFor({ previewLimit: 0 }), 0);
+  assert.equal(limitFor({ previewLimit: 25 }), 25);
+  assert.equal(limitFor({ previewLimit: 4_000_000_000 }), 4_000_000_000);
+  assert.equal(limitFor({ previewLimit: 25.9 }), 25);
+
+  // A row count that is not a finite, non-negative number says nothing about
+  // the window, so it must not be read as "show no rows".
+  assert.equal(limitFor({ previewLimit: 5_000_000_000 }), UNLIMITED_PREVIEW);
+  assert.equal(limitFor({ previewLimit: -1 }), UNLIMITED_PREVIEW);
+  assert.equal(limitFor({ previewLimit: Number.NaN }), UNLIMITED_PREVIEW);
+  assert.equal(limitFor({ previewLimit: Number.POSITIVE_INFINITY }), UNLIMITED_PREVIEW);
 });
 
 test("execution plan preserves fan-out as independent direct-parent bindings", () => {

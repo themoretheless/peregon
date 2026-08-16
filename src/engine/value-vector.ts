@@ -6,12 +6,13 @@ import {
 import duckdbMvpUrl from "@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url";
 import duckdbWorkerSource from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?raw";
 import { tableFromArrays } from "apache-arrow";
-import type {
-  ExecutePlanNodeResult,
-  ExecutePlanRequest,
-  ExecutePlanResponse,
-  ExecutePlanStep,
-  ExecuteSourceStep,
+import {
+  UNLIMITED_PREVIEW,
+  type ExecutePlanNodeResult,
+  type ExecutePlanRequest,
+  type ExecutePlanResponse,
+  type ExecutePlanStep,
+  type ExecuteSourceStep,
 } from "../runtime/execute-plan.ts";
 import { parseValueVector, type ValueToken } from "./value-vector-parser.ts";
 
@@ -73,6 +74,11 @@ const stats = (input: number, output: number, values = output) => ({
   empty_values: 0,
   values,
 });
+
+// The Rust engine defaults a missing preview_limit to "no limit"; match it here
+// rather than relying on `total > undefined` happening to be false.
+const previewLimitOf = (request: ExecutePlanRequest): number =>
+  request.plan.preview_limit ?? UNLIMITED_PREVIEW;
 
 const nodeResult = (
   preview: readonly string[],
@@ -178,7 +184,7 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
         createdTables.push(tableName);
         const values = await withTimeout("Чтение вектора из DuckDB", orderedValues(connection, tableName));
         states.set(step.node_id, { tableName, tokens });
-        nodes[step.node_id] = nodeResult(values, null, vectorSchema, tokens.length, request.plan.preview_limit);
+        nodes[step.node_id] = nodeResult(values, null, vectorSchema, tokens.length, previewLimitOf(request));
         continue;
       }
 
@@ -194,7 +200,7 @@ export async function executeValueVectorPlan(request: ExecutePlanRequest): Promi
           step.config.strip_outer_quotes,
           step.config.skip_empty,
         ));
-        nodes[step.node_id] = nodeResult(values, vectorSchema, null, parent.tokens.length, request.plan.preview_limit);
+        nodes[step.node_id] = nodeResult(values, vectorSchema, null, parent.tokens.length, previewLimitOf(request));
         sinkOutputs[step.node_id] = output;
       }
     }
